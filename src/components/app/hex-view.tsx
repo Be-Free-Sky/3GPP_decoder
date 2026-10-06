@@ -1,5 +1,3 @@
-"use client";
-
 export function HexView({ hex }: { hex: string }) {
   const bytes: number[] = [];
   for (let i = 0; i + 1 < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));

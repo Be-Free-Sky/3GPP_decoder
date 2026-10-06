@@ -1,5 +1,3 @@
-"use client";
-
 import { WaveformIcon } from "@phosphor-icons/react";
 import { EngineStatus } from "./engine-status";
 import { SamplesMenu } from "./samples-menu";

@@ -1,5 +1,3 @@
-"use client";
-
 import { useSyncExternalStore } from "react";
 import { CheckCircleIcon, CircleNotchIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { engine, type EngineState } from "@/lib/engine/client";
@@ -53,8 +51,8 @@ export function EngineStatus({ className }: { className?: string }) {
         {s.stage === "error"
           ? s.error ?? "The decoder could not start."
           : s.info
-            ? `Runs in your browser: Python ${s.info.python} on Pyodide ${s.info.pyodide}, decoder engine ${s.info.engine}. Logs never leave this device.`
-            : "The decoder runs in your browser. The first visit downloads the Python runtime and 3GPP definitions; later visits load from cache."}
+            ? `Runs offline inside this page: Python ${s.info.python ?? ""} on Pyodide ${s.info.pyodide ?? ""}, decoder engine ${s.info.engine ?? ""}. The page makes no network requests, so logs never leave this device.`
+            : "The decoder runs offline inside this page. Starting it takes a few seconds; nothing is downloaded."}
       </TooltipContent>
     </Tooltip>
   );

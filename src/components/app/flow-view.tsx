@@ -1,5 +1,3 @@
-"use client";
-
 import { CellTowerIcon, DeviceMobileIcon, HardDrivesIcon } from "@phosphor-icons/react";
 import type { FlowEvent, Session } from "@/lib/engine/types";
 import { SeverityIcon } from "./bits";

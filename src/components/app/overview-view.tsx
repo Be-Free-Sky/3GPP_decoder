@@ -1,5 +1,3 @@
-"use client";
-
 import { motion, useReducedMotion } from "motion/react";
 import { CheckCircleIcon, MagnifyingGlassIcon, WarningIcon, WrenchIcon, XCircleIcon } from "@phosphor-icons/react";
 import type { Procedure, Report } from "@/lib/engine/types";

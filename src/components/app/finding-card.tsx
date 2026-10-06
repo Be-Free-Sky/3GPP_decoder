@@ -1,5 +1,3 @@
-"use client";
-
 import { useState } from "react";
 import { CaretRightIcon, MagnifyingGlassIcon, WrenchIcon } from "@phosphor-icons/react";
 import type { Finding } from "@/lib/engine/types";

@@ -1,5 +1,3 @@
-"use client";
-
 import { CellTowerIcon, CopyIcon, DatabaseIcon, GlobeHemisphereEastIcon, SimCardIcon } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import type { ContextItem, Session } from "@/lib/engine/types";

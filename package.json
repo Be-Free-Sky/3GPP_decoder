@@ -1,23 +1,25 @@
 {
   "name": "skyworth-3gpp-decoder",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "engine": "node scripts/build-engine.mjs",
-    "dev": "node scripts/build-engine.mjs --if-missing && next dev",
-    "build": "node scripts/build-engine.mjs --if-missing && next build",
-    "preview": "node scripts/preview.mjs",
+    "build": "node scripts/build-engine.mjs --if-missing && vite build",
+    "dev": "node scripts/build-engine.mjs --if-missing && vite",
+    "test": "node tests/e2e.mjs",
     "test:engine": "node scripts/run-python.mjs -m unittest discover -s decoder/tests",
-    "lint": "eslint"
+    "check": "tsc --noEmit && eslint .",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
     "@phosphor-icons/react": "^2.1.10",
     "class-variance-authority": "^0.7.1",
     "cmdk": "^1.1.1",
     "cn": "^0.4.0",
     "motion": "^14.0.0",
-    "next": "16.3.8",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "shadcn": "^4.21.3",
@@ -25,14 +27,23 @@
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.3.8",
+    "@vitejs/plugin-react-swc": "^4.3.3",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "playwright-core": "^1.63.0",
     "pyodide": "^314.0.7",
     "tailwindcss": "^4",
-    "typescript": "^5"
-  }
+    "typescript": "^5",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^8.3.3",
+    "vite-plugin-singlefile": "^2.3.3"
+  },
+  "description": "A single offline HTML page that decodes LTE / 5G NR RRC, NAS and S1AP / NGAP hex from Logel logs into readable messages with root cause analysis.",
+  "type": "module"
 }

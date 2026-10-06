@@ -1,4 +1,5 @@
-// Build the in-browser decoder bundles (public/engine/bundles/*.zip + manifest.json).
+// Build the in-browser decoder bundles (build/engine/*.zip + manifest.json), which
+// scripts/payload.mjs embeds into the single index.html.
 //
 // The Python engine (decoder/engine) and the parts of pycrate it needs are
 // compiled to bytecode *inside Pyodide* so the .pyc files match the exact
@@ -18,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { loadPyodide, version as pyodideVersion } from "pyodide";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const OUT = join(ROOT, "public", "engine", "bundles");
+const OUT = join(ROOT, "build", "engine");
 const MANIFEST = join(OUT, "manifest.json");
 
 function findSitePackages() {

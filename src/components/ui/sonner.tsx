@@ -1,5 +1,3 @@
-"use client"
-
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CheckCircleIcon, CircleNotchIcon, InfoIcon, WarningIcon, XCircleIcon } from "@phosphor-icons/react"
 

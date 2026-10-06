@@ -45,5 +45,6 @@ next-env.d.ts
 __pycache__/
 *.pyc
 
-# generated decoder bundles (npm run engine)
-/public/engine/bundles/
+# build intermediates (npm run build); the published page is ./index.html
+/build/
+/dist/

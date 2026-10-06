@@ -1,5 +1,3 @@
-"use client";
-
 import { useMemo } from "react";
 import { CircleNotchIcon, LightningIcon, TrashIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";

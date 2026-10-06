@@ -1,5 +1,3 @@
-"use client";
-
 import { useState } from "react";
 import { BookOpenIcon, FlowArrowIcon, HashIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";

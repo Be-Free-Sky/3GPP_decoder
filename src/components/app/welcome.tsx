@@ -1,5 +1,3 @@
-"use client";
-
 import { motion, useReducedMotion } from "motion/react";
 import { ArrowRightIcon, LockSimpleIcon } from "@phosphor-icons/react";
 import samples from "@/data/samples.json";
@@ -96,7 +94,12 @@ export function Welcome({ onSample }: { onSample: (text: string) => void }) {
         </div>
         <p className="flex items-start gap-2 text-[12.5px] leading-relaxed text-muted-foreground">
           <LockSimpleIcon className="mt-0.5 size-4 shrink-0 text-brand-3" />
-          Decoding runs in your browser. Pasted logs are never uploaded, so operator and subscriber data stays on this machine.
+          Everything runs inside this one page, offline. It makes no network requests, so operator and subscriber data stays on this
+          machine.
+        </p>
+        <p className="border-t border-hairline pt-4 text-[11.5px] leading-relaxed text-muted-foreground">
+          Copyright © 2026 Rahul Kumbhar. SKYWORTH and 创维 are trademarks of Skyworth Group. Decodes with pycrate (LGPL 2.1) on
+          Pyodide (MPL 2.0).
         </p>
       </div>
     </div>

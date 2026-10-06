@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RadioPoint, Session } from "@/lib/engine/types";
 import { MsgRef, SectionTitle } from "./bits";

@@ -1,5 +1,3 @@
-"use client";
-
 import { useState } from "react";
 import { CaretUpDownIcon, CheckIcon, MagicWandIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";

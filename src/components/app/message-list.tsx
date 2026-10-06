@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useRef } from "react";
 import type { MessageEntry } from "@/lib/engine/types";
 import { carriedTitle, protocolShort, worstSeverity } from "@/lib/format";
