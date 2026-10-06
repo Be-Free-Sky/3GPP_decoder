@@ -4,6 +4,7 @@ import {
   CopyIcon,
   DownloadSimpleIcon,
   FlowArrowIcon,
+  HouseIcon,
   IdentificationCardIcon,
   ListMagnifyingGlassIcon,
   SquaresFourIcon,
@@ -15,6 +16,7 @@ import type { Report, SplitMode } from "@/lib/engine/types";
 import { copyText, downloadFile, worstSeverity } from "@/lib/format";
 import { reportToMarkdown } from "@/lib/report-md";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TopBar } from "./top-bar";
 import { InputPanel } from "./input-panel";
 import { MessageList } from "./message-list";
@@ -23,32 +25,34 @@ import { OverviewView } from "./overview-view";
 import { FlowView } from "./flow-view";
 import { RadioView } from "./radio-view";
 import { ContextView } from "./context-view";
-import { Welcome } from "./welcome";
+import { Home } from "./home";
 import { EngineStatus, useEngineState } from "./engine-status";
 import { cn } from "@/lib/utils";
 
 type Tab = "overview" | "flow" | "message" | "radio" | "context";
+type View = "home" | "results";
 
-const TAB_META: Record<Tab, { label: string; icon: typeof SquaresFourIcon }> = {
+const TAB_META: Record<Tab, { label: string; short?: string; icon: typeof SquaresFourIcon }> = {
   overview: { label: "Overview", icon: SquaresFourIcon },
-  flow: { label: "Signalling flow", icon: FlowArrowIcon },
+  flow: { label: "Signalling flow", short: "Flow", icon: FlowArrowIcon },
   message: { label: "Message", icon: ListMagnifyingGlassIcon },
   radio: { label: "Radio", icon: ChartLineIcon },
   context: { label: "Context", icon: IdentificationCardIcon },
 };
 
 const STORAGE_KEY = "skyworth-3gpp-decoder:input";
+const RESULTS_HASH = "#results";
 
 function ResultSkeleton() {
   return (
     <div className="flex flex-col gap-4" aria-hidden>
-      <div className="h-28 rounded-2xl skeleton-line" />
+      <div className="h-32 rounded-3xl skeleton-line" />
       <div className="grid grid-cols-2 gap-3">
-        <div className="h-16 rounded-xl skeleton-line" />
-        <div className="h-16 rounded-xl skeleton-line" />
+        <div className="h-20 rounded-2xl skeleton-line" />
+        <div className="h-20 rounded-2xl skeleton-line" />
       </div>
       <div className="h-4 w-1/3 rounded skeleton-line" />
-      <div className="h-48 rounded-2xl skeleton-line" />
+      <div className="h-56 rounded-3xl skeleton-line" />
     </div>
   );
 }
@@ -64,14 +68,16 @@ export function DecoderApp() {
   const [selected, setSelected] = useState(0);
   const [tab, setTab] = useState<Tab>("overview");
   const [issuesOnly, setIssuesOnly] = useState(false);
+  const [view, setView] = useState<View>("home");
   const engineState = useEngineState();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hasResults = useRef(false);
 
   useEffect(() => {
     engine.boot();
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      // Restored after hydration on purpose: the static HTML has no access to localStorage.
+      // Restored after the first render on purpose: the page HTML carries no saved state.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       if (saved) setText(saved);
     } catch {
@@ -90,37 +96,62 @@ export function DecoderApp() {
     return () => clearTimeout(t);
   }, [text]);
 
+  // Browser Back from the results returns to the home page.
+  useEffect(() => {
+    const onPop = () => setView(location.hash === RESULTS_HASH && hasResults.current ? "results" : "home");
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const showResults = useCallback(() => {
+    if (location.hash !== RESULTS_HASH) history.pushState({ view: "results" }, "", RESULTS_HASH);
+    setView("results");
+    window.scrollTo({ top: 0 });
+  }, []);
+
+  const goHome = useCallback(() => {
+    if (location.hash === RESULTS_HASH) history.back();
+    else setView("home");
+    window.scrollTo({ top: 0 });
+  }, []);
+
+  const applyReport = useCallback((rep: Report, ovr: Record<number, string>, keep?: { index: number; tab: Tab }) => {
+    if (!rep.messages.length) {
+      setReport(null);
+      setError("No hex bytes were found in the input. Paste the message bytes, for example 40 12 0A ... or a Logel line ending in hex.");
+      return;
+    }
+    setReport(rep);
+    hasResults.current = true;
+    setOverrides(ovr);
+    if (keep) {
+      setSelected(keep.index);
+      setTab(keep.tab);
+    } else {
+      const firstIssue = rep.messages.find((m) => worstSeverity(m.result));
+      setSelected(firstIssue?.index ?? 0);
+      setTab(rep.messages.length > 1 ? "overview" : "message");
+      setIssuesOnly(false);
+    }
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, []);
+
   const run = useCallback(
-    async (input: string, ovr: Record<number, string>, keep?: { index: number; tab: Tab }) => {
+    async (input: string, ovr: Record<number, string>, opts?: { keep?: { index: number; tab: Tab }; protocol?: string; split?: SplitMode }) => {
       if (!input.trim()) return;
       setDecoding(true);
       setError(null);
+      showResults();
       try {
-        const rep = await engine.decode(input, protocol, split, ovr);
-        if (!rep.messages.length) {
-          setReport(null);
-          setError("No hex bytes were found in the input. Paste the message bytes, for example 40 12 0A ... or a Logel line ending in hex.");
-          return;
-        }
-        setReport(rep);
-        setOverrides(ovr);
-        if (keep) {
-          setSelected(keep.index);
-          setTab(keep.tab);
-        } else {
-          const firstIssue = rep.messages.find((m) => worstSeverity(m.result));
-          setSelected(firstIssue?.index ?? 0);
-          setTab(rep.messages.length > 1 ? "overview" : "message");
-          setIssuesOnly(false);
-        }
-        scrollRef.current?.scrollTo({ top: 0 });
+        const rep = await engine.decode(input, opts?.protocol ?? protocol, opts?.split ?? split, ovr);
+        applyReport(rep, ovr, opts?.keep);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setDecoding(false);
       }
     },
-    [protocol, split],
+    [protocol, split, showResults, applyReport],
   );
 
   const decodeInput = () => run(text, {});
@@ -129,28 +160,15 @@ export function DecoderApp() {
     setText(sample);
     setProtocol("auto");
     setSplit("auto");
-    setDecoding(true);
-    setError(null);
-    engine
-      .decode(sample, "auto", "auto", {})
-      .then((rep) => {
-        setReport(rep);
-        setOverrides({});
-        const firstIssue = rep.messages.find((m) => worstSeverity(m.result));
-        setSelected(firstIssue?.index ?? 0);
-        setTab(rep.messages.length > 1 ? "overview" : "message");
-        setIssuesOnly(false);
-        scrollRef.current?.scrollTo({ top: 0 });
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setDecoding(false));
+    setReport(null);
+    run(sample, {}, { protocol: "auto", split: "auto" });
   };
 
   const override = (index: number, p: string) => {
     const next = { ...overrides };
     if (p === "auto") delete next[index];
     else next[index] = p;
-    run(text, next, { index, tab: "message" });
+    run(text, next, { keep: { index, tab: "message" } });
   };
 
   const openMessage = (i: number) => {
@@ -172,7 +190,7 @@ export function DecoderApp() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
-      if (!report || el.closest("input, textarea, [role=listbox], [contenteditable]")) return;
+      if (view !== "results" || !report || el.closest("input, textarea, [role=listbox], [contenteditable]")) return;
       if (e.key === "j" || e.key === "k") {
         const next = Math.max(0, Math.min(report.messages.length - 1, selected + (e.key === "j" ? 1 : -1)));
         setSelected(next);
@@ -181,28 +199,48 @@ export function DecoderApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [report, selected]);
+  }, [report, selected, view]);
 
   const entry = report?.messages[selected];
   const issueCount = report?.session ? report.session.kpis.critical + report.session.kpis.warnings : 0;
+  const inputProps = {
+    text,
+    setText,
+    protocol,
+    setProtocol,
+    split,
+    setSplit,
+    onDecode: decodeInput,
+    decoding,
+    engineReady: engineState.stage === "ready",
+  };
+
+  if (view === "home") {
+    return (
+      <div className="flex min-h-dvh flex-col">
+        <TopBar onSample={loadSample} onHome={goHome} />
+        <Home
+          input={inputProps}
+          onSample={loadSample}
+          resume={
+            report
+              ? {
+                  label: `Back to results (${report.messages.length} ${report.messages.length === 1 ? "message" : "messages"})`,
+                  onResume: showResults,
+                }
+              : null
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <TopBar onSample={loadSample} />
-      <main className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-1 gap-4 px-4 py-4 lg:h-[calc(100dvh-57px)] lg:grid-cols-[minmax(340px,400px)_minmax(0,1fr)] lg:overflow-hidden">
-        <aside className="glass flex min-h-0 flex-col overflow-hidden rounded-2xl">
-          <InputPanel
-            text={text}
-            setText={setText}
-            protocol={protocol}
-            setProtocol={setProtocol}
-            split={split}
-            setSplit={setSplit}
-            onDecode={decodeInput}
-            decoding={decoding}
-            engineReady={engineState.stage === "ready"}
-            compact={Boolean(report && report.messages.length > 1)}
-          />
+      <TopBar onSample={loadSample} onHome={goHome} />
+      <main className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-1 gap-5 px-4 py-5 sm:px-6 lg:h-[calc(100dvh-57px)] lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[390px_minmax(0,1fr)]">
+        <aside className="flex min-h-0 flex-col overflow-hidden rounded-3xl border border-border bg-white shadow-[0_24px_48px_-32px_rgb(0_27_72/0.45)]">
+          <InputPanel {...inputProps} compact={Boolean(report && report.messages.length > 1)} />
           {engineState.stage !== "ready" ? (
             <div className="px-4 pb-3 md:hidden">
               <EngineStatus />
@@ -221,64 +259,112 @@ export function DecoderApp() {
           ) : null}
         </aside>
 
-        <section aria-label="Results" className="glass flex min-h-[60vh] min-w-0 flex-col overflow-hidden rounded-2xl">
-          {report ? (
-            <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 pt-2">
-              <div role="tablist" aria-label="Result views" className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto scrollbar-thin">
-                {tabs.map((t) => {
-                  const M = TAB_META[t];
-                  return (
-                    <button
-                      key={t}
-                      role="tab"
-                      aria-selected={tab === t}
-                      onClick={() => setTab(t)}
-                      className={cn(
-                        "relative -mb-px inline-flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-3 text-[13px] font-medium transition-colors duration-150",
-                        tab === t ? "border-brand-3 text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      <M.icon className="size-4" />
-                      {M.label}
-                      {t === "overview" && issueCount ? (
-                        <span className="rounded-full bg-critical/10 px-1.5 text-[11px] tabular-nums text-critical">{issueCount}</span>
-                      ) : null}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex gap-1 pb-1.5">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground"
-                  onClick={async () => (await copyText(reportToMarkdown(report))) && toast.success("Report copied as Markdown")}
-                >
-                  <CopyIcon /> Copy report
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground"
-                  onClick={() => downloadFile("3gpp-decode.json", JSON.stringify(report, null, 2))}
-                >
-                  <DownloadSimpleIcon /> JSON
-                </Button>
-              </div>
+        <section
+          aria-label="Results"
+          className="flex min-h-[60vh] min-w-0 flex-col overflow-hidden rounded-3xl border border-border bg-white shadow-[0_24px_48px_-32px_rgb(0_27_72/0.45)]"
+        >
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-gradient-to-r from-brand-3/[0.06] via-white to-white px-3 py-2.5">
+            <Button variant="outline" size="lg" className="gap-1.5 rounded-full bg-white px-3.5 font-semibold text-brand-2" onClick={goHome}>
+              <HouseIcon weight="bold" className="size-4" />
+              Home
+            </Button>
+            <span aria-hidden className="mx-1 hidden h-6 w-px bg-border sm:block" />
+            <div role="tablist" aria-label="Result views" className="flex min-w-0 flex-1 gap-1 overflow-x-auto scrollbar-thin">
+              {tabs.map((t) => {
+                const M = TAB_META[t];
+                const active = tab === t;
+                return (
+                  <button
+                    key={t}
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setTab(t)}
+                    className={cn(
+                      "press inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[13.5px] font-semibold transition-[background-color,color,box-shadow] duration-150",
+                      active
+                        ? "brand-gradient text-white shadow-[0_8px_18px_-10px_rgb(1_138_190/0.9)]"
+                        : "text-muted-foreground hover:bg-brand-3/[0.08] hover:text-brand-2",
+                    )}
+                  >
+                    <M.icon weight={active ? "fill" : "regular"} className="size-4" />
+                    {M.short ? (
+                      <>
+                        <span className="hidden xl:inline">{M.label}</span>
+                        <span className="xl:hidden">{M.short}</span>
+                      </>
+                    ) : (
+                      M.label
+                    )}
+                    {t === "overview" && issueCount ? (
+                      <span
+                        className={cn(
+                          "rounded-full px-1.5 text-[11px] tabular-nums",
+                          active ? "bg-white/25 text-white" : "bg-critical/10 text-critical",
+                        )}
+                      >
+                        {issueCount}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
-          ) : null}
-          <div ref={scrollRef} className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin p-4 md:p-6", decoding && report && "opacity-60 transition-opacity duration-150")}>
+            {report ? (
+              <div className="flex gap-1">
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon-lg"
+                        className="rounded-full text-muted-foreground hover:bg-brand-3/[0.08] hover:text-brand-2"
+                        aria-label="Copy report as Markdown"
+                        onClick={async () => (await copyText(reportToMarkdown(report))) && toast.success("Report copied as Markdown")}
+                      />
+                    }
+                  >
+                    <CopyIcon className="size-[18px]" />
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Copy report (Markdown, for tickets)</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon-lg"
+                        className="rounded-full text-muted-foreground hover:bg-brand-3/[0.08] hover:text-brand-2"
+                        aria-label="Save the full decode as JSON"
+                        onClick={() => downloadFile("3gpp-decode.json", JSON.stringify(report, null, 2))}
+                      />
+                    }
+                  >
+                    <DownloadSimpleIcon className="size-[18px]" />
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Save the full decode as JSON</TooltipContent>
+                </Tooltip>
+              </div>
+            ) : null}
+          </div>
+          <div
+            ref={scrollRef}
+            className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin p-5 md:p-7", decoding && report && "opacity-60 transition-opacity duration-150")}
+          >
             {error ? (
-              <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl border border-critical/25 bg-critical/[0.05] p-4">
+              <div role="alert" className="mb-5 flex items-start gap-3 rounded-2xl border border-critical/25 bg-critical/[0.05] p-4">
                 <WarningCircleIcon weight="fill" className="mt-0.5 size-5 shrink-0 text-critical" />
-                <div>
-                  <p className="text-[14px] font-medium text-foreground">Decoding stopped</p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[14px] font-semibold text-foreground">Decoding stopped</p>
                   <p className="mt-0.5 text-[13px] text-muted-foreground">{error}</p>
                 </div>
+                {!report ? (
+                  <Button variant="outline" size="sm" className="shrink-0 rounded-full" onClick={goHome}>
+                    <HouseIcon /> Home
+                  </Button>
+                ) : null}
               </div>
             ) : null}
             {decoding && !report ? <ResultSkeleton /> : null}
-            {!report && !decoding ? <Welcome onSample={loadSample} /> : null}
             {report && entry ? (
               <>
                 {tab === "overview" && report.session ? <OverviewView report={report} onOpen={openMessage} /> : null}

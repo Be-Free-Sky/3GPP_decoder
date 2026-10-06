@@ -33,10 +33,10 @@ export function OverviewView({ report, onOpen }: { report: Report; onOpen: (i: n
 
   const k = s.kpis;
   const stats = [
-    { label: "Messages decoded", value: `${k.decoded}/${k.messages}` },
-    { label: "Procedures completed", value: `${k.procedures.success ?? 0}`, sub: `${k.procedures.failure ?? 0} failed` },
-    { label: "Handovers", value: `${k.handovers}`, sub: `${k.reestablishments} re-establishments` },
-    { label: "Log duration", value: fmtMs(k.durationMs) },
+    { label: "Decoded", value: `${k.decoded}/${k.messages}`, sub: "messages" },
+    { label: "Procedures OK", value: `${k.procedures.success ?? 0}`, sub: `${k.procedures.failure ?? 0} failed` },
+    { label: "Handovers", value: `${k.handovers}`, sub: `${k.reestablishments} ${k.reestablishments === 1 ? "re-establishment" : "re-establishments"}` },
+    { label: "Duration", value: fmtMs(k.durationMs), sub: "first to last message" },
     { label: "Radio access", value: k.rats.join(" + ") || "n/a" },
   ];
 

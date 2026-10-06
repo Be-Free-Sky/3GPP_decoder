@@ -85,6 +85,15 @@ try {
     check(ok, `${title}: "${heading}"`);
   }
 
+  // navigation: Home, back to the results, and the browser Back button
+  await page.getByRole("button", { name: /^Home$/ }).click();
+  check((await page.locator("#examples").count()) === 1, "Home button returns to the home page");
+  await page.getByRole("button", { name: /Back to results/ }).click();
+  check((await page.getByRole("tab", { name: /Overview/ }).count()) === 1, "Back to results reopens the last decode");
+  await page.goBack();
+  await page.locator("#examples").waitFor({ timeout: 10000 }).catch(() => {});
+  check((await page.locator("#examples").count()) === 1, "browser Back returns to the home page");
+
   // an interface message: the S1AP / NGAP block is unpacked on first use
   await page.locator("#hex-input").fill(S1AP_HEX);
   await page.getByRole("button", { name: /^Decode/ }).click();
