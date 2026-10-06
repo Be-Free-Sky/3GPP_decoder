@@ -64,8 +64,9 @@ The results open on the **Summary** for a session, or on the **Message** for one
 - **HTML report** downloads the analysis as one `.html` file (about 1.5 MB) that looks and
   works exactly like this page: the same header, tabs, cards, message list, decode trees and
   charts. It is the app itself without the decoder engine, opened on this analysis, so it
-  needs no install and makes no network requests. The **Files** page (the capture's file
-  list) is left out of it.
+  needs no install and makes no network requests. It is a viewer only: no Home, Copy report,
+  HTML report, print or JSON buttons, and the **Files** page (the capture's file list) is
+  left out of it.
 
 **JSON** saves the raw decode.
 The look, colours, header and footer follow Skyworth Log Prism.

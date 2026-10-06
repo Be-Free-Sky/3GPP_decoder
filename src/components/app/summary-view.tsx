@@ -160,8 +160,9 @@ export function SummaryView({
   onReport,
 }: {
   report: Report;
-  onCopy: () => void;
-  onReport: () => void;
+  /** absent in a shared report, which is read-only */
+  onCopy?: () => void;
+  onReport?: () => void;
   onOpen: (i: number) => void;
   onTab: (t: "flow" | "radio" | "messages" | "files") => void;
 }) {
@@ -240,18 +241,24 @@ export function SummaryView({
           ) : null}
         </div>
         <div className="no-print mt-[18px] flex flex-wrap gap-2">
-          <button
-            onClick={onCopy}
-            className="btn-primary press inline-flex h-[38px] items-center gap-2 rounded-[11px] px-4 text-[13.5px] font-semibold"
-          >
-            <CopyIcon weight="bold" className="size-[18px]" /> Copy the summary
-          </button>
-          <GhostButton icon={FileHtmlIcon} onClick={onReport}>
-            HTML report
-          </GhostButton>
-          <GhostButton icon={FileTextIcon} onClick={() => window.print()}>
-            Print or save as PDF
-          </GhostButton>
+          {onCopy ? (
+            <button
+              onClick={onCopy}
+              className="btn-primary press inline-flex h-[38px] items-center gap-2 rounded-[11px] px-4 text-[13.5px] font-semibold"
+            >
+              <CopyIcon weight="bold" className="size-[18px]" /> Copy the summary
+            </button>
+          ) : null}
+          {onReport ? (
+            <>
+              <GhostButton icon={FileHtmlIcon} onClick={onReport}>
+                HTML report
+              </GhostButton>
+              <GhostButton icon={FileTextIcon} onClick={() => window.print()}>
+                Print or save as PDF
+              </GhostButton>
+            </>
+          ) : null}
           <GhostButton icon={FlowArrowIcon} onClick={() => onTab("flow")}>
             Signalling flow
           </GhostButton>

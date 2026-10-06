@@ -346,8 +346,8 @@ export function DecoderApp() {
         tab={tab}
         onTab={pickTab}
         onHome={SHARED ? undefined : goHome}
-        onCopy={report ? () => copyPage(tab) : undefined}
-        onReport={report ? downloadReport : undefined}
+        onCopy={report && !SHARED ? () => copyPage(tab) : undefined}
+        onReport={report && !SHARED ? downloadReport : undefined}
         copying={copying}
         onJson={report && !SHARED ? () => downloadFile("3gpp-decode.json", JSON.stringify(report, null, 2)) : undefined}
       />
@@ -372,7 +372,13 @@ export function DecoderApp() {
         {report && entry ? (
           <>
             {tab === "summary" && report.session ? (
-              <SummaryView report={report} onOpen={openMessage} onTab={pickTab} onCopy={() => copyPage("summary")} onReport={downloadReport} />
+              <SummaryView
+                report={report}
+                onOpen={openMessage}
+                onTab={pickTab}
+                onCopy={SHARED ? undefined : () => copyPage("summary")}
+                onReport={SHARED ? undefined : downloadReport}
+              />
             ) : null}
             {tab === "files" && report.capture ? <FilesView capture={report.capture} /> : null}
             {tab === "flow" && report.session ? <FlowView session={report.session} selected={selected} onOpen={openMessage} /> : null}

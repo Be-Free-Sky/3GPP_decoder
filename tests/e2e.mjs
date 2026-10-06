@@ -195,6 +195,8 @@ try {
     `the HTML report has the app's pages without Files (${viewerTabs.join(", ")})`,
   );
   check((await viewer.getByRole("button", { name: "Home", exact: true }).count()) === 0, "the HTML report has no Home button");
+  const exports = await viewer.getByRole("button", { name: /Copy report|HTML report|Copy the summary|Print or save as PDF|JSON/ }).count();
+  check(exports === 0, `the HTML report is a viewer only, with no copy or export buttons (${exports})`);
   await viewer.getByRole("tab", { name: /^Messages/ }).click();
   await viewer.locator('[role="option"]').nth(2).click();
   check((await viewer.getByText("Message 3 of").count()) === 1, "messages open in the HTML report as in the app");
