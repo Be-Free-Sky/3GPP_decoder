@@ -41,11 +41,12 @@ export function MessageList({
 
   return (
     <section aria-labelledby="messages-heading" className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between gap-2 border-t border-border px-4 pb-2 pt-3">
-        <h2 id="messages-heading" className="text-sm font-semibold text-foreground">
-          Messages <span className="font-normal tabular-nums text-muted-foreground">{messages.length}</span>
+      <div className="flex items-center justify-between gap-2 border-b border-border px-4 pb-3 pt-3.5">
+        <h2 id="messages-heading" className="flex items-center gap-2 text-[15px] font-bold text-foreground">
+          Messages{" "}
+          <span className="rounded-full bg-hover-2 px-[7px] py-px font-mono text-[11px] font-semibold tabular-nums text-ink-2">{messages.length}</span>
         </h2>
-        <div role="radiogroup" aria-label="Filter messages" className="flex gap-0.5 rounded-lg bg-muted p-0.5">
+        <div role="radiogroup" aria-label="Filter messages" className="flex gap-0.5 rounded-[10px] border border-border bg-sunken p-[3px]">
           {[
             { v: false, l: "All" },
             { v: true, l: `Issues ${issues.length}` },
@@ -56,8 +57,8 @@ export function MessageList({
               aria-checked={issuesOnly === o.v}
               onClick={() => setIssuesOnly(o.v)}
               className={cn(
-                "h-6 rounded-md px-2 text-xs font-medium tabular-nums transition-[background-color,color] duration-150",
-                issuesOnly === o.v ? "bg-white text-foreground shadow-[0_1px_2px_rgb(0_27_72/0.12)]" : "text-muted-foreground hover:text-foreground",
+                "h-[26px] rounded-[7px] px-2.5 text-[12.5px] font-semibold tabular-nums transition-[background-color,color,box-shadow] duration-150",
+                issuesOnly === o.v ? "bg-panel text-foreground shadow-[inset_0_0_0_1px_rgb(11_27_52/0.13)]" : "text-ink-2 hover:text-foreground",
               )}
             >
               {o.l}
@@ -79,10 +80,10 @@ export function MessageList({
             move(-1);
           }
         }}
-        className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-2 pb-3 outline-none focus-visible:ring-2 focus-visible:ring-brand-3/30"
+        className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-2 py-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[rgb(0_105_200/0.3)]"
       >
         {shown.length === 0 ? (
-          <p className="px-3 py-6 text-center text-xs text-muted-foreground">No messages with issues.</p>
+          <p className="px-3 py-6 text-center text-[13px] text-muted-foreground">No messages with issues.</p>
         ) : null}
         {shown.map((m) => {
           const r = m.result;
@@ -97,8 +98,8 @@ export function MessageList({
               data-index={m.index}
               onClick={() => onSelect(m.index)}
               className={cn(
-                "group relative flex cursor-pointer items-center gap-2.5 rounded-lg py-2 pl-3 pr-2.5 transition-colors duration-150 [content-visibility:auto] [contain-intrinsic-size:auto_52px]",
-                active ? "bg-brand-3/[0.1] ring-1 ring-brand-3/25" : "hover:bg-muted",
+                "group relative flex cursor-pointer items-center gap-2.5 rounded-[10px] py-2 pl-3 pr-2.5 transition-[background-color,box-shadow] duration-150 [content-visibility:auto] [contain-intrinsic-size:auto_54px]",
+                active ? "bg-[rgb(0_105_200/0.11)] shadow-[inset_0_0_0_1px_rgb(0_105_200/0.3)]" : "hover:bg-hover",
               )}
             >
               {sev ? (
@@ -107,21 +108,21 @@ export function MessageList({
                   className={cn("absolute inset-y-2 left-0.5 w-[3px] rounded-full", sev === "critical" ? "bg-critical" : "bg-warning")}
                 />
               ) : null}
-              <span className="w-7 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{m.index + 1}</span>
+              <span className="w-7 shrink-0 text-right font-mono text-[11.5px] tabular-nums text-muted-foreground">{m.index + 1}</span>
               <span
                 className={cn(
-                  "grid size-6 shrink-0 place-items-center rounded-md",
-                  r.direction === "UL" ? "bg-brand-3/[0.12] text-brand-2" : "bg-brand-2/[0.1] text-brand-1",
+                  "grid size-[26px] shrink-0 place-items-center rounded-[8px] text-white",
+                  r.direction === "UL" ? "bg-[linear-gradient(135deg,#018abe,#0069c8)]" : r.direction === "DL" ? "bg-[linear-gradient(135deg,#0069c8,#02457a)]" : "bg-[linear-gradient(135deg,#56677d,#34475f)]",
                 )}
               >
                 <DirectionGlyph result={r} />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-medium text-foreground">
+                <span className="block truncate text-[13.5px] font-semibold text-foreground">
                   {r.ok ? r.message?.title : "Could not decode"}
-                  {carried ? <span className="font-normal text-brand-2"> · {carried}</span> : null}
+                  {carried ? <span className="font-medium text-link"> · {carried}</span> : null}
                 </span>
-                <span className="flex items-center gap-1.5 truncate text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1.5 truncate text-[12px] text-muted-foreground">
                   {m.timestamp ? <span className="font-mono tabular-nums">{m.timestamp}</span> : null}
                   <span className="truncate">{r.ok ? protocolShort(r) : `${r.bytes} bytes`}</span>
                 </span>

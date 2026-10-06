@@ -1,6 +1,7 @@
-import { CellTowerIcon, DeviceMobileIcon, HardDrivesIcon } from "@phosphor-icons/react";
+import { CellTowerIcon, DeviceMobileIcon, FlowArrowIcon, HardDrivesIcon } from "@phosphor-icons/react";
 import type { FlowEvent, Session } from "@/lib/engine/types";
 import { SeverityIcon } from "./bits";
+import { CardHead } from "./summary-view";
 import { cn } from "@/lib/utils";
 
 function laneIcon(lane: string) {
@@ -33,25 +34,42 @@ export function FlowView({ session, selected, onOpen }: { session: Session; sele
   const events = session.events;
 
   return (
-    <div className="flex flex-col gap-3">
-      <p className="text-[13px] text-muted-foreground">
-        Signalling ladder in log order. NAS messages carried inside RRC are drawn dashed between the UE and the core. Select a row to open the
-        message.
-      </p>
-      <div className="overflow-x-auto rounded-2xl border border-border bg-raised scrollbar-thin">
+    <section className="surface rounded-2xl px-[18px] py-4">
+      <CardHead
+        icon={FlowArrowIcon}
+        title="Signalling flow"
+        sub="Every message between the device, the radio network and the core, in log order. Select a row to open it."
+        aside={
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-ink-2">
+            <span className="inline-flex items-center gap-1.5">
+              <i aria-hidden className="w-5 border-t-2 border-blue" />
+              Message
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <i aria-hidden className="w-5 border-t-2 border-dashed border-brand-3" />
+              NAS inside RRC
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <i aria-hidden className="w-5 border-t-2 border-critical" />
+              Failure
+            </span>
+          </div>
+        }
+      />
+      <div className="overflow-x-auto rounded-[12px] border border-border bg-panel scrollbar-thin">
         <div className="min-w-[560px]">
-          <div className="sticky top-0 z-10 grid grid-cols-[92px_1fr] border-b border-border bg-white/95 backdrop-blur">
-            <div className="px-3 py-3 text-[11.5px] font-medium text-muted-foreground">Time</div>
+          <div className="grid grid-cols-[92px_1fr] border-b border-border bg-panel-2">
+            <div className="flex items-center px-3 py-3 text-[12px] font-semibold text-muted-foreground">Time</div>
             <div className="grid" style={{ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` }}>
               {lanes.map((l) => {
                 const Icon = laneIcon(l);
                 return (
                   <div key={l} className="flex flex-col items-center gap-1 py-2.5">
-                    <span className="grid size-8 place-items-center rounded-[10px] border border-brand-3/20 bg-brand-3/[0.08] text-brand-2">
-                      <Icon className="size-4.5" />
+                    <span className="grad grid size-[30px] place-items-center rounded-[9px] text-white">
+                      <Icon weight="bold" className="size-[17px]" />
                     </span>
-                    <span className="text-[12.5px] font-semibold text-foreground">{l}</span>
-                    <span className="text-[10.5px] text-muted-foreground">{LANE_ROLE[l] ?? ""}</span>
+                    <span className="text-[13px] font-bold text-foreground">{l}</span>
+                    <span className="text-[11px] text-muted-foreground">{LANE_ROLE[l] ?? ""}</span>
                   </div>
                 );
               })}
@@ -78,7 +96,7 @@ export function FlowView({ session, selected, onOpen }: { session: Session; sele
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -89,9 +107,9 @@ function FlowRow({ e, active, from, to, onOpen }: { e: FlowEvent; active: boolea
   const tone =
     e.error || e.status === "failure" ? "critical" : e.status === "warning" ? "warning" : e.sub != null ? "nested" : "normal";
   const lineColor =
-    tone === "critical" ? "border-critical" : tone === "warning" ? "border-warning" : tone === "nested" ? "border-brand-3/60" : "border-brand-2";
+    tone === "critical" ? "border-critical" : tone === "warning" ? "border-warning" : tone === "nested" ? "border-brand-3" : "border-blue";
   const headColor =
-    tone === "critical" ? "text-critical" : tone === "warning" ? "text-warning" : tone === "nested" ? "text-brand-3/70" : "text-brand-2";
+    tone === "critical" ? "text-critical" : tone === "warning" ? "text-warning" : tone === "nested" ? "text-brand-3" : "text-blue";
 
   return (
     <li className="[content-visibility:auto] [contain-intrinsic-size:auto_48px]">
@@ -99,18 +117,22 @@ function FlowRow({ e, active, from, to, onOpen }: { e: FlowEvent; active: boolea
         onClick={() => onOpen(e.i)}
         className={cn(
           "grid w-full grid-cols-[92px_1fr] text-left transition-colors duration-150",
-          active ? "bg-brand-3/[0.08]" : "hover:bg-muted/70",
+          active
+            ? "bg-[rgb(0_105_200/0.11)] shadow-[inset_3px_0_0_var(--accent-blue)]"
+            : tone === "critical"
+              ? "bg-critical-soft/40 hover:bg-critical-soft/70"
+              : "hover:bg-hover",
           e.sub != null && "opacity-90",
         )}
         aria-label={`Message ${e.i + 1}: ${e.title}`}
       >
         <span className="flex h-12 flex-col justify-center px-3">
-          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{e.ts ?? `#${e.i + 1}`}</span>
+          <span className="font-mono text-[11.5px] font-medium tabular-nums text-ink-2">{e.ts ?? `#${e.i + 1}`}</span>
           {e.ts ? <span className="font-mono text-[10px] text-muted-foreground/70">#{e.i + 1}</span> : null}
         </span>
         <span className="relative block h-12">
           {e.error ? (
-            <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[12px] font-medium text-critical">
+            <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[12.5px] font-semibold text-critical-ink">
               Decode failed
             </span>
           ) : (
@@ -121,8 +143,8 @@ function FlowRow({ e, active, from, to, onOpen }: { e: FlowEvent; active: boolea
               >
                 <span
                   className={cn(
-                    "inline-flex max-w-full items-center gap-1 truncate text-[12px] font-medium",
-                    tone === "nested" ? "text-brand-2" : "text-foreground",
+                    "inline-flex max-w-full items-center gap-1 truncate text-[12.5px] font-semibold",
+                    tone === "nested" ? "text-info-ink" : tone === "critical" ? "text-critical-ink" : "text-foreground",
                   )}
                 >
                   {tone === "critical" ? <SeverityIcon severity="critical" className="size-3.5" /> : null}

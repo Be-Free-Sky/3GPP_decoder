@@ -27,12 +27,12 @@ export function Chip({
     <span
       title={title}
       className={cn(
-        "inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-xs font-medium",
-        tone === "neutral" && "border-border bg-raised text-muted-foreground",
-        tone === "brand" && "border-brand-3/25 bg-brand-3/[0.08] text-brand-2",
-        tone === "critical" && "border-critical/25 bg-critical/[0.07] text-critical",
-        tone === "warning" && "border-warning/30 bg-warning/[0.08] text-warning",
-        tone === "mono" && "border-border bg-raised font-mono text-[11px] text-muted-foreground",
+        "inline-flex h-[26px] items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-[12.5px] font-semibold",
+        tone === "neutral" && "border-line-2 bg-panel text-ink-2",
+        tone === "brand" && "border-accent-ring bg-accent text-link",
+        tone === "critical" && "border-transparent bg-critical-soft text-critical-ink",
+        tone === "warning" && "border-transparent bg-warning-soft text-warning-ink",
+        tone === "mono" && "border-line-2 bg-panel-2 font-mono text-[11.5px] font-medium text-ink-2",
         className,
       )}
     >
@@ -61,7 +61,7 @@ export function DirectionGlyph({ result, className }: { result: DecodeResult; cl
 export function SectionTitle({ children, aside, className }: { children: React.ReactNode; aside?: React.ReactNode; className?: string }) {
   return (
     <div className={cn("flex items-center justify-between gap-3", className)}>
-      <h3 className="text-[13px] font-semibold text-foreground">{children}</h3>
+      <h3 className="text-[13.5px] font-semibold text-ink-2">{children}</h3>
       {aside}
     </div>
   );
@@ -71,7 +71,7 @@ export function MsgRef({ i, onOpen }: { i: number; onOpen: (i: number) => void }
   return (
     <button
       onClick={() => onOpen(i)}
-      className="press inline-flex h-5 items-center rounded-md border border-border bg-raised px-1.5 font-mono text-[11px] text-link transition-colors duration-150 hover:border-brand-3/40 hover:bg-brand-3/[0.08]"
+      className="press inline-flex h-[22px] items-center rounded-md border border-line-2 bg-panel px-1.5 font-mono text-[11.5px] font-semibold text-link transition-colors duration-150 hover:border-accent-ring hover:bg-accent"
       aria-label={`Open message ${i + 1}`}
     >
       #{i + 1}

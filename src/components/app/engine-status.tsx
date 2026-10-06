@@ -22,27 +22,27 @@ export function EngineStatus({ className }: { className?: string }) {
             role="status"
             aria-live="polite"
             className={cn(
-              "relative flex h-8 items-center gap-2 overflow-hidden rounded-full border border-border bg-raised px-3 text-xs font-medium text-muted-foreground",
+              "relative inline-flex h-7 items-center gap-2 overflow-hidden px-1 text-[12.5px] font-medium text-muted-foreground",
               className,
             )}
           />
         }
       >
         {s.stage === "ready" ? (
-          <CheckCircleIcon weight="fill" className="size-4 text-brand-3" />
+          <CheckCircleIcon weight="fill" className="size-4 text-ok" />
         ) : s.stage === "error" ? (
           <WarningCircleIcon weight="fill" className="size-4 text-critical" />
         ) : (
-          <CircleNotchIcon className="size-4 animate-spin text-brand-3 motion-reduce:animate-none" />
+          <CircleNotchIcon className="size-4 animate-spin text-blue motion-reduce:animate-none" />
         )}
         <span className="whitespace-nowrap">
-          {s.label}
+          {s.stage === "ready" ? "Decoder ready, offline" : s.label}
           {busy && pct != null ? <span className="tabular-nums"> {pct}%</span> : null}
         </span>
         {busy && pct != null ? (
           <span
             aria-hidden
-            className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-brand-3 transition-transform duration-200 ease-(--ease-out)"
+            className="absolute inset-x-0 bottom-0 h-0.5 origin-left rounded-full bg-blue transition-transform duration-200 ease-(--ease-out)"
             style={{ transform: `scaleX(${s.progress})` }}
           />
         ) : null}

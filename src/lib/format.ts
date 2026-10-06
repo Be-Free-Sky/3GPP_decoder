@@ -7,19 +7,44 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   ok: "OK",
 };
 
+/** Icon and mark colour for a severity. */
 export const SEVERITY_TEXT: Record<Severity, string> = {
   critical: "text-critical",
   warning: "text-warning",
-  info: "text-info",
+  info: "text-blue",
   ok: "text-ok",
 };
 
-/** Left accent + tint used on cards and rows for a severity. */
+/** Text colour that reads on the soft status fill. */
+export const SEVERITY_INK: Record<Severity, string> = {
+  critical: "text-critical-ink",
+  warning: "text-warning-ink",
+  info: "text-info-ink",
+  ok: "text-ok-ink",
+};
+
+/** Soft status fill (chips, call-outs). */
+export const SEVERITY_SOFT: Record<Severity, string> = {
+  critical: "bg-critical-soft",
+  warning: "bg-warning-soft",
+  info: "bg-info-soft",
+  ok: "bg-ok-soft",
+};
+
+/** Left accent + tint used on finding cards. */
 export const SEVERITY_SURFACE: Record<Severity, string> = {
-  critical: "border-l-critical bg-critical/[0.06]",
-  warning: "border-l-warning bg-warning/[0.06]",
-  info: "border-l-info bg-info/[0.05]",
-  ok: "border-l-ok bg-ok/[0.05]",
+  critical: "border-l-critical bg-critical-soft/50",
+  warning: "border-l-warning bg-warning-soft/50",
+  info: "border-l-blue bg-info-soft/40",
+  ok: "border-l-ok bg-ok-soft/50",
+};
+
+/** Top border colour of a status tile. */
+export const SEVERITY_TOP: Record<Severity, string> = {
+  critical: "border-t-critical",
+  warning: "border-t-warning",
+  info: "border-t-blue",
+  ok: "border-t-ok",
 };
 
 export const STATUS_SEVERITY: Record<Status, Severity> = { ok: "ok", warning: "warning", failure: "critical" };

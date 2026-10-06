@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RadioPoint, Session } from "@/lib/engine/types";
-import { MsgRef, SectionTitle } from "./bits";
+import { ChartLineIcon, TableIcon } from "@phosphor-icons/react";
+import { MsgRef } from "./bits";
+import { CardHead } from "./summary-view";
 import { cn } from "@/lib/utils";
 
 type Metric = "rsrp" | "rsrq" | "sinr";
@@ -98,12 +100,15 @@ function MetricChart({ metric, points, onOpen }: { metric: Metric; points: Radio
   };
 
   return (
-    <figure className="rounded-2xl border border-border bg-raised p-4">
+    <figure className="surface rounded-2xl px-[18px] py-4">
       <figcaption className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="text-[13px] font-semibold text-foreground">
-          {m.title} <span className="font-normal text-muted-foreground">({m.unit})</span>
+        <span className="flex items-center gap-2.5 text-[15.5px] font-bold text-foreground">
+          <span className="grad grid size-[30px] place-items-center rounded-[9px] text-white">
+            <ChartLineIcon weight="bold" className="size-[17px]" />
+          </span>
+          {m.title} <span className="font-medium text-muted-foreground">({m.unit})</span>
         </span>
-        <span className="text-xs tabular-nums text-muted-foreground">
+        <span className="text-[12.5px] tabular-nums text-ink-2">
           min {Math.min(...vals)}, max {Math.max(...vals)}, last {last} {m.unit}
         </span>
       </figcaption>
@@ -114,7 +119,7 @@ function MetricChart({ metric, points, onOpen }: { metric: Metric; points: Radio
           role="img"
           aria-label={`${m.title} over ${data.length} measurement reports`}
           tabIndex={0}
-          className="block touch-none outline-none focus-visible:ring-2 focus-visible:ring-brand-3/30"
+          className="block touch-none outline-none focus-visible:ring-2 focus-visible:ring-[rgb(0_105_200/0.3)]"
           onPointerMove={(e) => pick(e.clientX, e.currentTarget.getBoundingClientRect())}
           onPointerLeave={() => setHover(null)}
           onClick={() => h && onOpen(h.i)}
@@ -146,7 +151,7 @@ function MetricChart({ metric, points, onOpen }: { metric: Metric; points: Radio
           {data.length > 1 ? (
             <path d={path} fill="none" stroke="var(--chart-line)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
           ) : null}
-          {h ? <line x1={x(hover!)} x2={x(hover!)} y1={pad.t} y2={H - pad.b} stroke="var(--brand-2)" strokeOpacity={0.35} strokeWidth={1} /> : null}
+          {h ? <line x1={x(hover!)} x2={x(hover!)} y1={pad.t} y2={H - pad.b} stroke="var(--accent-blue)" strokeOpacity={0.35} strokeWidth={1} /> : null}
           {data.map((d, k) => (
             <circle
               key={k}
@@ -170,7 +175,7 @@ function MetricChart({ metric, points, onOpen }: { metric: Metric; points: Radio
         {h ? (
           <div
             role="tooltip"
-            className="pointer-events-none absolute top-1 z-10 w-52 rounded-xl border border-border bg-white px-3 py-2 text-xs shadow-[0_12px_28px_-12px_rgb(0_27_72/0.35)]"
+            className="pointer-events-none absolute top-1 z-10 w-52 rounded-[12px] border border-border bg-panel px-3 py-2 text-[12.5px] shadow-soft"
             style={{ left: Math.min(Math.max(x(hover!) + 12, 0), width - 216) }}
           >
             <div className="text-[15px] font-semibold tabular-nums text-foreground">
@@ -201,7 +206,7 @@ export function RadioView({ session, onOpen }: { session: Session; onOpen: (i: n
   const pts = session.radio.points;
   if (!pts.length) {
     return (
-      <div className="rounded-2xl border border-dashed border-border p-8 text-center text-[13px] text-muted-foreground">
+      <div className="surface rounded-2xl p-8 text-center text-[14px] text-muted-foreground">
         No measurement reports in this log. Radio quality appears here when the log contains LTE or NR Measurement Reports.
       </div>
     );
@@ -209,19 +214,19 @@ export function RadioView({ session, onOpen }: { session: Session; onOpen: (i: n
   const metrics = (["rsrp", "rsrq", "sinr"] as Metric[]).filter((k) => pts.some((p) => typeof p[k] === "number"));
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-[13px] text-muted-foreground">
+      <p className="text-[14px] text-ink-2">
         Serving cell quality from {pts.length} measurement {pts.length === 1 ? "report" : "reports"}, in log order. Hover or use the arrow keys for
         values; select a point to open its message.
       </p>
       {metrics.map((k) => (
         <MetricChart key={k} metric={k} points={pts} onOpen={onOpen} />
       ))}
-      <section className="flex flex-col gap-2">
-        <SectionTitle>Measurement reports</SectionTitle>
-        <div className="overflow-x-auto rounded-xl border border-border bg-raised scrollbar-thin">
-          <table className="w-full min-w-[600px] text-left text-[13px]">
+      <section className="surface rounded-2xl px-[18px] py-4">
+        <CardHead icon={TableIcon} title="Measurement reports" sub="Serving cell and the strongest neighbours in each report." />
+        <div className="overflow-x-auto rounded-[12px] border border-border bg-panel scrollbar-thin">
+          <table className="w-full min-w-[600px] text-left text-[13.5px]">
             <thead>
-              <tr className="border-b border-border text-[11.5px] text-muted-foreground">
+              <tr className="border-b border-border bg-panel-2 text-[12px] text-muted-foreground">
                 <th className="px-3.5 py-2 font-medium">Message</th>
                 <th className="px-3 py-2 font-medium">Time</th>
                 <th className="px-3 py-2 font-medium">RAT</th>
@@ -233,7 +238,7 @@ export function RadioView({ session, onOpen }: { session: Session; onOpen: (i: n
             </thead>
             <tbody>
               {pts.map((p) => (
-                <tr key={p.i} className="border-b border-hairline last:border-0">
+                <tr key={p.i} className="even:bg-[rgb(11_27_52/0.022)]">
                   <td className="px-3.5 py-2">
                     <MsgRef i={p.i} onOpen={onOpen} />
                   </td>

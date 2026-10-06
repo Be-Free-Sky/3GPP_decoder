@@ -5,7 +5,7 @@
 //
 // Fails on: any network request, any console error or CSP violation, a wrong verdict.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
@@ -21,15 +21,17 @@ const BROWSERS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ];
 
+// session title -> verdict of the summary card (bad = "The main problem", ok = "All good")
 const SESSIONS = [
-  ["LTE attach, healthy", "No problems found"],
-  ["LTE handover failure and call drop", "failures found"],
-  ["5G SA registration rejected (no slices)", "1 failure found"],
-  ["5G SA PDU session rejected (unknown DNN)", "1 failure found"],
-  ["EN-DC: NR leg added, then SCG failure", "1 failure found"],
+  ["LTE attach, healthy", "ok"],
+  ["LTE handover failure and call drop", "bad"],
+  ["5G SA registration rejected (no slices)", "bad"],
+  ["5G SA PDU session rejected (unknown DNN)", "bad"],
+  ["EN-DC: NR leg added, then SCG failure", "bad"],
 ];
 const S1AP_HEX =
   "000c403e000005000800020001001a00161507417208091010103254769802e0e000040201d031004300060000f1100001006440080000f110123450100086400130";
+const SAMPLES = JSON.parse(readFileSync(join(ROOT, "src/data/samples.json"), "utf8"));
 
 let failures = 0;
 const check = (ok, what) => {
@@ -59,46 +61,61 @@ page.on("console", (m) => {
 });
 page.on("pageerror", (e) => errors.push(e.message));
 
+/** Wait until the results header names `title` and the summary shows `verdict`. */
+const waitForResult = (title, verdict) =>
+  page
+    .waitForFunction(
+      ([t, v]) => {
+        const h1 = document.querySelector("header h1");
+        const card = document.querySelector("[data-verdict]");
+        return Boolean(h1 && h1.textContent === t && (!v || (card && card.getAttribute("data-verdict") === v)));
+      },
+      [title, verdict],
+      { timeout: 60000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+
+const onHome = async () => (await page.locator("main h1", { hasText: "3GPP Decoder" }).count()) === 1;
+
 try {
   const t0 = Date.now();
   await page.goto(pathToFileURL(PAGE).href);
   await page.getByText("Decoder ready").first().waitFor({ timeout: 120000 });
   check(true, `engine ready from file:// in ${Date.now() - t0} ms`);
+  check((await page.locator("#hex-input").inputValue()) === "", "the home page hex box starts empty");
 
   for (const [title, verdict] of SESSIONS) {
-    await page.getByRole("button", { name: "Samples" }).click();
-    await page.locator("[data-slot=popover-content]").getByRole("button", { name: title }).click();
-    // the previous report stays on screen until the new one arrives: wait for this session's verdict
-    const ok = await page
-      .waitForFunction(
-        ([t, v]) => {
-          const ta = document.querySelector("#hex-input");
-          const h = [...document.querySelectorAll("h2")].find((x) => /found/.test(x.textContent || ""));
-          return Boolean(ta && t && h && h.textContent.includes(v) && !document.querySelector("button[disabled] .animate-spin"));
-        },
-        [title, verdict],
-        { timeout: 60000 },
-      )
-      .then(() => true)
-      .catch(() => false);
-    const heading = await page.locator("h2", { hasText: /found/ }).first().innerText();
-    check(ok, `${title}: "${heading}"`);
+    if (!(await onHome())) await page.getByRole("button", { name: "Home", exact: true }).click();
+    await page.getByRole("tab", { name: /Examples/ }).click();
+    await page.getByRole("tabpanel").getByRole("button", { name: new RegExp(`^${title.replace(/[()]/g, "\\$&")}`) }).click();
+    const ok = await waitForResult(title, verdict);
+    const head = ok ? await page.locator("[data-verdict] h2").first().innerText() : "(no summary)";
+    check(ok, `${title}: ${verdict === "ok" ? "All good" : "The main problem"}, "${head}"`);
   }
 
   // navigation: Home, back to the results, and the browser Back button
-  await page.getByRole("button", { name: /^Home$/ }).click();
-  check((await page.locator("#examples").count()) === 1, "Home button returns to the home page");
-  await page.getByRole("button", { name: /Back to results/ }).click();
-  check((await page.getByRole("tab", { name: /Overview/ }).count()) === 1, "Back to results reopens the last decode");
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  check(await onHome(), "Home button returns to the home page");
+  check((await page.locator("#hex-input").inputValue()) === "", "examples never fill the hex box");
+  await page.getByRole("button", { name: /Back to the results/ }).click();
+  check((await page.getByRole("tab", { name: /Summary/ }).count()) === 1, "Back to the results reopens the last decode");
   await page.goBack();
-  await page.locator("#examples").waitFor({ timeout: 10000 }).catch(() => {});
-  check((await page.locator("#examples").count()) === 1, "browser Back returns to the home page");
+  await page.locator("#hex-input").waitFor({ timeout: 10000 }).catch(() => {});
+  check(await onHome(), "browser Back returns to the home page");
+
+  // a Logel text export opened as a file
+  await page.getByRole("tab", { name: /Upload file/ }).click();
+  const drop = SAMPLES.sessions.find((s) => s.id === "lte-ho-drop");
+  await page.locator("#file-input").setInputFiles({ name: "logel-export.txt", mimeType: "text/plain", buffer: Buffer.from(drop.text) });
+  check(await waitForResult("logel-export.txt", "bad"), "a dropped or browsed text file is decoded");
 
   // an interface message: the S1AP / NGAP block is unpacked on first use
+  await page.getByRole("button", { name: "Home", exact: true }).click();
   await page.locator("#hex-input").fill(S1AP_HEX);
   await page.getByRole("button", { name: /^Decode/ }).click();
-  const title = await page.locator("main h2").first().innerText({ timeout: 60000 });
   await page.getByText("Initial UE Message").first().waitFor({ timeout: 60000 });
+  const title = await page.locator("main h2").first().innerText();
   check(true, `S1AP decoded on demand ("${title}")`);
 
   check(network.length === 0, `no network requests (${network.length})${network.length ? ": " + network.slice(0, 3).join(", ") : ""}`);

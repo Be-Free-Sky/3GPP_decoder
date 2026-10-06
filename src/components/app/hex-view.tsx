@@ -4,8 +4,8 @@ export function HexView({ hex }: { hex: string }) {
   const rows: number[][] = [];
   for (let i = 0; i < bytes.length; i += 16) rows.push(bytes.slice(i, i + 16));
   return (
-    <div className="overflow-x-auto rounded-xl border border-border bg-raised p-3 scrollbar-thin">
-      <table className="font-mono text-[12px] leading-6">
+    <div className="overflow-x-auto rounded-[12px] border border-border bg-panel-2 p-3.5 scrollbar-thin">
+      <table className="font-mono text-[12.5px] leading-6 text-foreground">
         <thead className="sr-only">
           <tr>
             <th>Offset</th>

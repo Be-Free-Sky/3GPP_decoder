@@ -97,8 +97,8 @@ const Row = memo(function Row({ node, path, depth }: { node: TreeNode; path: str
     <div role="treeitem" aria-selected={false} aria-expanded={hasKids ? open : undefined} aria-level={depth + 1}>
       <div
         className={cn(
-          "group flex min-h-7 items-start gap-1.5 rounded-md py-[3px] pr-2 transition-colors duration-100 hover:bg-muted/80",
-          hit && "bg-brand-3/[0.09]",
+          "group flex min-h-7 items-start gap-1.5 rounded-md py-[3px] pr-2 transition-colors duration-100 hover:bg-hover",
+          hit && "bg-[rgb(255_196_0/0.28)]",
         )}
         style={{ paddingLeft: depth * 16 + 4 }}
       >
@@ -123,7 +123,7 @@ const Row = memo(function Row({ node, path, depth }: { node: TreeNode; path: str
           {node.r ? (
             <span className="rounded border border-border px-1 font-mono text-[10px] leading-4 text-muted-foreground">{node.r}</span>
           ) : null}
-          {node.chl ? <span className="text-[12px] text-brand-2">{node.chl}</span> : null}
+          {node.chl ? <span className="text-[12px] font-semibold text-link">{node.chl}</span> : null}
           {node.n != null ? <span className="text-[11px] tabular-nums text-muted-foreground">{node.n} items</span> : null}
           {value != null && !(node.chl && hasKids) ? (
             <button
@@ -150,7 +150,7 @@ const Row = memo(function Row({ node, path, depth }: { node: TreeNode; path: str
           {node.emb != null && ctx.onEmbedded ? (
             <button
               onClick={() => ctx.onEmbedded!(node.emb!)}
-              className="inline-flex items-center gap-1 rounded-full border border-brand-3/30 bg-brand-3/[0.08] px-2 text-[11px] font-medium leading-5 text-brand-2 hover:bg-brand-3/[0.14]"
+              className="inline-flex items-center gap-1 rounded-full border border-accent-ring bg-accent px-2 text-[11.5px] font-semibold leading-5 text-link hover:bg-hover-2"
             >
               <ArrowSquareOutIcon className="size-3" /> Decoded content
             </button>
@@ -218,10 +218,10 @@ export function DecodeTree({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search fields and values"
-            className="h-8 w-full rounded-lg border border-input bg-raised pl-8 pr-3 text-[13px] outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-muted-foreground/80 focus-visible:border-brand-3 focus-visible:ring-3 focus-visible:ring-brand-3/20"
+            className="h-8 w-full rounded-[9px] border border-line-2 bg-panel pl-8 pr-3 text-[13px] outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-muted-foreground/80 focus-visible:border-blue focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgb(0_105_200/0.12)]"
           />
         </div>
-        <div role="radiogroup" aria-label="Field names" className="flex gap-0.5 rounded-lg bg-muted p-0.5">
+        <div role="radiogroup" aria-label="Field names" className="flex gap-0.5 rounded-[10px] border border-border bg-sunken p-[3px]">
           {[
             { v: false, l: "Readable" },
             { v: true, l: "Spec names" },
@@ -232,8 +232,8 @@ export function DecodeTree({
               aria-checked={spec === o.v}
               onClick={() => setSpec(o.v)}
               className={cn(
-                "h-7 rounded-md px-2.5 text-xs font-medium transition-[background-color,color] duration-150",
-                spec === o.v ? "bg-white text-foreground shadow-[0_1px_2px_rgb(0_27_72/0.12)]" : "text-muted-foreground hover:text-foreground",
+                "h-[26px] rounded-[7px] px-2.5 text-[12.5px] font-semibold transition-[background-color,color,box-shadow] duration-150",
+                spec === o.v ? "bg-panel text-foreground shadow-[inset_0_0_0_1px_rgb(11_27_52/0.13)]" : "text-ink-2 hover:text-foreground",
               )}
             >
               {o.l}
@@ -251,7 +251,7 @@ export function DecodeTree({
         <p className="px-2 py-3 text-xs text-muted-foreground">No field or value matches &ldquo;{query}&rdquo;.</p>
       ) : null}
       <Ctx.Provider value={ctx}>
-        <div role="tree" aria-label="Decoded fields" className="rounded-xl border border-border bg-raised p-1.5">
+        <div role="tree" aria-label="Decoded fields" className="rounded-[12px] border border-border bg-panel p-1.5">
           <Row node={root} path="r" depth={0} />
         </div>
       </Ctx.Provider>

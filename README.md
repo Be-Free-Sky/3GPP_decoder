@@ -26,27 +26,35 @@ inside 5GMM transport.
 
 1. Open `index.html` in Chrome, Edge or Firefox (double-click works), or open the published
    GitHub Pages link. The decoder starts in about 3 seconds.
-2. Paste hex into the input. Accepted shapes: bare hex, `0x` lists, hexdumps with offsets,
-   or Logel lines such as `14:02:17.442  LTE RRC DL_DCCH RRCConnectionReconfiguration`
-   followed by the bytes. **Samples** loads ready-made sessions.
+2. On the home page, choose how to bring the log in:
+   - **Paste hex**: bare hex, `0x` lists, hexdumps with offsets, or Logel lines such as
+     `14:02:17.442  LTE RRC DL_DCCH RRCConnectionReconfiguration` followed by the bytes.
+     The box starts empty every time; nothing is saved between visits.
+   - **Upload file**: drop or browse a Logel text export (.txt, .log, .hex, .csv).
+   - **Examples**: five ready-made sessions, each with a different kind of problem, plus
+     single messages to try one at a time.
 3. Leave **Protocol** on Auto-detect and press **Decode** (Ctrl+Enter). The channel named in
    a log header is used first; without one, every channel is tried and only decodes that
-   re-encode to the identical bytes are kept. **Decode as** on a message offers the others.
+   re-encode to the identical bytes are kept. If a message cannot be identified, go back
+   **Home**, choose its protocol and channel, and decode again.
 
-With several messages you get:
+The results open on the **Summary** for a session, or on the **Message** for one message:
 
-- **Overview**: verdict, root cause with likely causes and what to check, findings, a
-  timeline of what happened, and procedure results (attach, registration, RRC setup,
-  security, handover, PDU session ...) with durations.
+- **Summary**: the main problem in one sentence and what to do, a status for radio link,
+  connection, registration and security, and data session, what happened in order, every
+  finding with likely causes and checks, and procedure results (attach, registration, RRC
+  setup, security, handover, PDU session ...) with durations.
 - **Signalling flow**: UE / eNB / gNB / MME / AMF ladder; NAS carried inside RRC is dashed.
-- **Message**: plain-English summary, key fields with physical values (dBm, band, frequency,
-  PLMN operator, timers), cause code analysis, the full decoded field tree (readable or
-  spec names, searchable), spec notation and hex.
+- **Messages**: the message list beside the selected message: plain-English summary, key
+  fields with physical values (dBm, band, frequency, PLMN operator, timers), cause code
+  analysis, the full decoded field tree (readable or spec names, searchable), spec notation
+  and hex. `j` / `k` step through the messages.
 - **Radio**: serving RSRP / RSRQ / SINR from measurement reports.
 - **Context**: PLMN, TAC, cell IDs, IMSI / GUTI / TMSI, APN / DNN, IP address and QoS.
 
-**Copy report** puts a Markdown RCA summary on the clipboard for tickets; **JSON** saves
-the full decode.
+**Home** goes back to the home page (and **Back to the results** returns), **Copy report**
+puts a Markdown RCA summary on the clipboard for tickets, and **JSON** saves the full decode.
+The look, colours, header and footer follow Skyworth Log Prism.
 
 Limits: ciphered NAS cannot be read without keys (Logel normally records NAS after
 deciphering, which decodes fine). MAC / RLC / PDCP headers and Logel's own record headers

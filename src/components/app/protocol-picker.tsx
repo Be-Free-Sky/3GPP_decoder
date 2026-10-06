@@ -38,13 +38,13 @@ export function ProtocolPicker({
             id={id}
             variant="outline"
             size="lg"
-            className={cn("w-full justify-between bg-raised font-normal", className)}
+            className={cn("h-9 w-full justify-between rounded-[11px] border-line-2 bg-panel font-medium", className)}
             aria-label="Protocol and channel"
           />
         }
       >
         <span className="flex min-w-0 items-center gap-2">
-          {value === "auto" ? <MagicWandIcon className="size-4 text-brand-3" /> : null}
+          {value === "auto" ? <MagicWandIcon className="size-4 text-blue" /> : null}
           <span className="truncate">{protocolLabel(value)}</span>
         </span>
         <CaretUpDownIcon className="size-4 text-muted-foreground" />
@@ -56,12 +56,12 @@ export function ProtocolPicker({
             <CommandEmpty>No protocol matches.</CommandEmpty>
             <CommandGroup heading="Recommended">
               <CommandItem value="auto auto-detect detect" onSelect={() => choose("auto")}>
-                <MagicWandIcon className="text-brand-3" />
+                <MagicWandIcon className="text-blue" />
                 <span className="flex-1">
                   Auto-detect
                   <span className="block text-xs text-muted-foreground">Uses Logel headers, then verifies by re-encoding</span>
                 </span>
-                {value === "auto" ? <CheckIcon className="text-brand-3" /> : null}
+                {value === "auto" ? <CheckIcon className="text-blue" /> : null}
               </CommandItem>
             </CommandGroup>
             {catalog.groups.map((g) => {
@@ -75,7 +75,7 @@ export function ProtocolPicker({
                       {p.direction ? (
                         <span className="text-[11px] tabular-nums text-muted-foreground">{p.direction}</span>
                       ) : null}
-                      {value === p.id ? <CheckIcon className="text-brand-3" /> : null}
+                      {value === p.id ? <CheckIcon className="text-blue" /> : null}
                     </CommandItem>
                   ))}
                 </CommandGroup>
