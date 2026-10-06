@@ -1,6 +1,7 @@
 """Skyworth 3GPP Decoder engine.
 
 decode_text(text, protocol="auto", split="auto") -> JSON-ready report.
+decode_capture(capture) -> the same report for a modem log capture (see capture.py).
 """
 
 from collections import Counter
@@ -9,6 +10,7 @@ from . import catalog
 from .decode import decode_as, detect, confidence_for, _error_result
 from .hexinput import parse_records, hints_from_header
 from . import session as session_mod
+from . import capture as capture_mod
 
 VERSION = "1.0.0"
 MAX_RECORDS = 3000
@@ -103,4 +105,32 @@ def decode_text(text, protocol="auto", split="auto", overrides=None):
             "header": rec.get("header"), "result": _strip_private(it["result"]),
         })
     report["session"] = sess
+    return report
+
+
+def decode_capture(cap):
+    """A modem log capture: PDUs with their logged channel, plus AT, radio, IP and log facts."""
+    recs = (cap.get("records") or [])[:capture_mod.MAX_RECORDS]
+    truncated = len(cap.get("records") or []) > capture_mod.MAX_RECORDS
+    items = []
+    for i, r in enumerate(recs):
+        try:
+            data = bytes.fromhex(r.get("hex") or "")
+        except ValueError:
+            data = b""
+        header = r.get("header")
+        rec = {"bytes": data, "header": header, "line": None, "timestamp": r.get("ts")}
+        res = capture_mod.decode_record(r.get("protocol"), data,
+                                        lambda d, h=header: _decode_record({"bytes": d, "header": h}, "auto")[0])
+        items.append({"index": i, "record": rec, "result": res, "hints": {}})
+    extra = capture_mod.extras_for(cap, len(items))
+    report = {"version": VERSION, "truncated": truncated, "messages": []}
+    for it in items:
+        rec = it["record"]
+        report["messages"].append({"index": it["index"], "line": None, "timestamp": rec.get("timestamp"),
+                                   "header": rec.get("header"), "result": _strip_private(it["result"])})
+    report["session"] = session_mod.analyze(items, extra) if items else None
+    report["capture"] = {k: cap.get(k) for k in ("name", "kind", "files", "device", "ip", "stats", "notes", "span") if cap.get(k) is not None}
+    if not items:
+        report["capture"]["extra"] = extra
     return report

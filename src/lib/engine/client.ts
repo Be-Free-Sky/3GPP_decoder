@@ -110,6 +110,17 @@ class EngineClient {
       this.worker!.postMessage({ id, type: "decode", text, protocol, split, overrides });
     });
   }
+
+  /** A modem log capture prepared by lib/capture (records with their logged channel, AT, radio, IP). */
+  decodeCapture(capture: unknown): Promise<Report> {
+    this.boot();
+    if (!this.worker) return Promise.reject(new Error(this.state.error ?? "The decoder is not available."));
+    const id = ++this.seq;
+    return new Promise<Report>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.worker!.postMessage({ id, type: "capture", capture: JSON.stringify(capture) });
+    });
+  }
 }
 
 export const engine = new EngineClient();

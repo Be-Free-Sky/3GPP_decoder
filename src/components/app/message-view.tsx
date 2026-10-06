@@ -189,7 +189,16 @@ export function MessageView({
   const tone = toneOf(r, sev);
   const T = TONE[tone];
   const det = r.detection;
-  const detText = det?.mode === "manual" ? "Protocol chosen by hand" : det?.mode === "hint" ? "Protocol from the log header" : det ? `Auto-detected, ${det.confidence} confidence` : null;
+  const detText =
+    det?.mode === "log"
+      ? "Channel logged by the modem"
+      : det?.mode === "manual"
+        ? "Protocol chosen by hand"
+        : det?.mode === "hint"
+          ? "Protocol from the log header"
+          : det
+            ? `Auto-detected, ${det.confidence} confidence`
+            : null;
   const todo = r.findings.find((f) => (f.severity === "critical" || f.severity === "warning") && f.checks?.length)?.checks?.[0];
   const scrollToEmbedded = (i: number) =>
     document.getElementById(`emb-${i}`)?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });

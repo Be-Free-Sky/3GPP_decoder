@@ -6,6 +6,7 @@
 // Fails on: any network request, any console error or CSP violation, a wrong verdict.
 
 import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
@@ -32,6 +33,15 @@ const SESSIONS = [
 const S1AP_HEX =
   "000c403e000005000800020001001a00161507417208091010103254769802e0e000040201d031004300060000f1100001006440080000f110123450100086400130";
 const SAMPLES = JSON.parse(readFileSync(join(ROOT, "src/data/samples.json"), "utf8"));
+const FIXTURE = join(ROOT, "build", "fixtures", "armlog_fixture.zip");
+
+// a synthetic Logel armlog zip in the real binary layout (decoder/tools/build_logel_fixture.py)
+const PY = [join(ROOT, ".venv", "Scripts", "python.exe"), join(ROOT, ".venv", "bin", "python")].find((p) => existsSync(p)) ?? "python";
+const built = spawnSync(PY, [join(ROOT, "decoder", "tools", "build_logel_fixture.py"), FIXTURE], { cwd: ROOT, encoding: "utf8" });
+if (built.status !== 0) {
+  console.error("Could not build the armlog fixture:", built.stderr || built.stdout);
+  process.exit(1);
+}
 
 let failures = 0;
 const check = (ok, what) => {
@@ -105,10 +115,32 @@ try {
   check(await onHome(), "browser Back returns to the home page");
 
   // a Logel text export opened as a file
-  await page.getByRole("tab", { name: /Upload file/ }).click();
+  await page.getByRole("tab", { name: /Upload log/ }).click();
   const drop = SAMPLES.sessions.find((s) => s.id === "lte-ho-drop");
   await page.locator("#file-input").setInputFiles({ name: "logel-export.txt", mimeType: "text/plain", buffer: Buffer.from(drop.text) });
+  await page.getByRole("button", { name: /^Decode$/ }).click();
   check(await waitForResult("logel-export.txt", "bad"), "a dropped or browsed text file is decoded");
+
+  // a whole Logel armlog as a zip: unzipped in the page, the useful files picked and decoded
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("tab", { name: /Upload log/ }).click();
+  await page.locator("#file-input").setInputFiles(FIXTURE);
+  await page.getByRole("button", { name: /Analyse log/ }).click();
+  const zipName = "armlog_fixture";
+  check(await waitForResult(zipName, "bad"), "an armlog zip is unzipped and analysed");
+  const head = await page.locator("[data-verdict] h2").first().innerText().catch(() => "");
+  check(/#62/.test(head), `the zip's root cause is the NAS cause ("${head}")`);
+  check((await page.getByRole("heading", { name: "Files in this log" }).count()) === 1, "the summary lists the files of the log");
+  await page.getByRole("tab", { name: /^Files/ }).click();
+  const used = await page.locator("li", { hasText: ".logel" }).first().innerText();
+  const skipped = await page.locator("li", { hasText: "msgview.dat" }).first().innerText();
+  check(/Analysed|Modem log/.test(used) && /RRC and NAS/.test(used), "the .logel is listed as analysed");
+  check(/display cache/.test(skipped), "Logel's view cache is listed as not needed, with the reason");
+  check((await page.getByText("nosuch.example.net").count()) > 0, "DNS lookups from the IP capture are listed");
+  await page.getByRole("tab", { name: /^Radio/ }).click();
+  check((await page.getByRole("heading", { name: /Serving cell, from the modem/ }).count()) === 1, "the modem's own radio samples are charted");
+  await page.getByRole("tab", { name: /^Messages/ }).click();
+  check((await page.getByText("Channel logged by the modem").count()) > 0, "messages use the channel the modem logged");
 
   // an interface message: the S1AP / NGAP block is unpacked on first use
   await page.getByRole("button", { name: "Home", exact: true }).click();

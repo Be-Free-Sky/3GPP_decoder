@@ -180,8 +180,11 @@ LANE_ORDER = ["UE", "eNB", "gNB", "gNB-DU", "gNB-CU", "RNC", "Peer RAN", "MME", 
 
 # --- main ----------------------------------------------------------------------------
 
-def analyze(items):
-    """items: list of {index, record, result}; returns the session report."""
+def analyze(items, extra=None):
+    """items: list of {index, record, result}; returns the session report.
+
+    extra: optional {findings, context, radio} from a modem capture (AT responses,
+    modem traces, IP capture), folded into the same analysis."""
     events = []
     for it in items:
         res = it["result"]
@@ -222,11 +225,22 @@ def analyze(items):
     findings = _collect_findings(items)
     findings += _procedure_findings(procedures)
     findings += _pattern_findings(items, events)
+    if extra:
+        own_critical = any(f["severity"] == "critical" for f in findings)
+        # AT status only confirms what the messages show; keep it when the messages say nothing
+        findings += [dict(f) for f in extra.get("findings") or [] if not (f.get("confirms") and own_critical)]
     findings = _dedupe(findings)
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 9), f.get("refs", [0])[0] if f.get("refs") else 0))
 
     radio = _radio_series(items)
     context = _context(items)
+    if extra:
+        if extra.get("radio"):
+            radio["modem"] = extra["radio"]
+            if "rsrp" not in radio and extra["radio"].get("rsrp"):
+                radio["rsrp"] = {k: extra["radio"]["rsrp"][k] for k in ("min", "max", "avg")}
+        from .capture import merge_context
+        merge_context(context, extra.get("context") or {})
     lanes = [l for l in LANE_ORDER if any(e.get("from") == l or e.get("to") == l for e in events)]
     kpis = _kpis(items, procedures, findings, events)
     narrative = _narrative(items, procedures, findings)
@@ -270,6 +284,10 @@ def _track(events):
         for d in PROCEDURES:
             if k in d["start"]:
                 prev = [p for p in open_ if p["_def"]["id"] == d["id"]]
+                same = [p for p in prev if _same_attempt(p, e)]
+                if same:
+                    same[0]["steps"].append(e["i"])
+                    continue
                 for p in prev:
                     p["status"] = "retried"
                     open_.remove(p)
@@ -288,6 +306,21 @@ def _track(events):
         p["steps"] = sorted(set(p["steps"]))
         out.append(p)
     return out
+
+
+def _same_attempt(p, e):
+    """The same NAS message seen twice is one attempt, not a retry.
+
+    It happens when a modem log carries a NAS message both as its own record and inside the RRC
+    message that transports it, or repeats it in a NAS message container. NAS retry timers run
+    for 10 s or more, so starts of a NAS procedure within 1.5 s belong together. RRC procedures
+    are left alone: T300 retries can come sooner and must still count."""
+    if p["layer"] != "NAS":
+        return False
+    if p["start"] == e["i"]:
+        return True
+    a, b = _ts_ms(p.get("startTs")), _ts_ms(e.get("ts"))
+    return a is not None and b is not None and 0 <= b - a <= 1500
 
 
 def _collect_findings(items):
@@ -528,7 +561,8 @@ def _narrative(items, procs, findings):
     crit = [f for f in findings if f["severity"] == "critical"]
     if crit:
         # earliest failure wins; on a tie prefer correlated findings (more refs) over single-message ones
-        first = sorted(crit, key=lambda f: (f.get("refs", [0])[0] if f.get("refs") else 0, -len(f.get("refs", []))))[0]
+        # findings without a message (capture AT / trace facts) come after the ones tied to a message
+        first = sorted(crit, key=lambda f: (f["refs"][0] if f.get("refs") else 10 ** 9, -len(f.get("refs", []))))[0]
         root = {"title": first["title"], "detail": first.get("detail"), "refs": first.get("refs", []),
                 "checks": first.get("checks", []), "causes": first.get("causes", [])}
     return {"steps": lines[:40], "root": root}

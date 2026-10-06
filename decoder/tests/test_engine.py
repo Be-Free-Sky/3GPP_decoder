@@ -160,5 +160,65 @@ class Radio(unittest.TestCase):
         self.assertEqual(radio.plmn_from_bytes(bytes.fromhex("00F110")), ("001", "01"))
 
 
+def capture_of(session_id, **extra):
+    """A capture as the browser builds it from a .logel: each message with its logged channel."""
+    lines = SESSIONS[session_id]["text"].splitlines()
+    recs = []
+    for head, hexline in zip(lines, lines[1:]):
+        parts = head.split()
+        if len(parts) >= 4 and ":" in parts[0] and parts[2] == "RRC":
+            recs.append({"ts": parts[0], "protocol": "nr-rrc." + parts[3].lower().replace("_", "-"),
+                         "hex": hexline.replace(" ", ""), "header": "NR RRC, modem log"})
+    cap = {"name": "test", "kind": "zip", "records": recs, "radio": [], "at": [], "device": {}}
+    cap.update(extra)
+    return cap
+
+
+class Capture(unittest.TestCase):
+    def test_logged_channel_is_trusted(self):
+        rep = engine.decode_capture(capture_of("nr-sa-slice-reject"))
+        self.assertTrue(all(m["result"]["ok"] for m in rep["messages"]))
+        self.assertTrue(all(m["result"]["detection"]["mode"] == "log" for m in rep["messages"]))
+        self.assertEqual(rep["session"]["verdict"], "failure")
+        self.assertIn("#62", rep["session"]["narrative"]["root"]["title"])
+
+    def test_at_answers_radio_and_dns(self):
+        cap = capture_of(
+            "nr-sa-slice-reject",
+            at=[{"ts": "09:14:02.600", "line": '+COPS: 0,0,"Test Net",11'},
+                {"ts": "09:14:02.700", "line": "+CESQ: 99,99,255,255,255,255,70,86,76"},
+                {"ts": "09:14:02.800", "line": '+C5GREG: 2,1,"0016","840484001",11,9,01.000001'}],
+            radio=[{"ts": "09:14:02.100", "rsrp": -71.2, "pci": 952, "arfcn": 634080},
+                   {"ts": "09:14:02.200", "sinr": 20.3}],
+            ip={"dns": [{"ts": "09:14:03.000", "name": "bad.example", "type": "A", "rcode": 3, "answers": 0, "answered": True}]},
+        )
+        s = engine.decode_capture(cap)["session"]
+        modem = s["radio"]["modem"]
+        self.assertEqual(modem["rsrp"]["n"], 2)  # trace sample + AT+CESQ (-157 + 86 = -71 dBm)
+        self.assertIn(-71, [p.get("rsrp") for p in modem["points"]])
+        self.assertEqual(modem["sinr"]["max"], 20.3)
+        self.assertEqual(modem["cells"][0]["band"], 78)
+        net = {r["label"]: r["value"] for r in s["context"]["network"]}
+        self.assertEqual(net["Operator"], "Test Net")
+        titles = [f["title"] for f in s["findings"]]
+        self.assertTrue(any("DNS lookup failed for bad.example" in t for t in titles))
+
+    def test_registration_denied_only_confirms(self):
+        at = [{"ts": "09:14:03.000", "line": "+C5GREG: 2,3"}]
+        s = engine.decode_capture(capture_of("nr-sa-slice-reject", at=at))["session"]
+        self.assertFalse(any(f.get("source") == "AT" for f in s["findings"] if f["severity"] == "critical"))
+        s2 = engine.decode_capture(capture_of("lte-attach-ok", at=at, records=[]))
+        self.assertIsNone(s2["session"])
+
+    def test_same_nas_twice_is_one_attempt(self):
+        nas = SINGLE["5gs-reg-req"]["hex"]
+        recs = [{"ts": "10:00:00.000", "protocol": "nas.5gs", "hex": nas, "header": "5GS NAS"},
+                {"ts": "10:00:00.180", "protocol": "nas.5gs", "hex": nas, "header": "5GS NAS"}]
+        s = engine.decode_capture({"name": "t", "records": recs})["session"]
+        regs = [p for p in s["procedures"] if p["id"] == "5gs-reg"]
+        self.assertEqual(len(regs), 1)
+        self.assertNotEqual(regs[0]["status"], "retried")
+
+
 if __name__ == "__main__":
     unittest.main()

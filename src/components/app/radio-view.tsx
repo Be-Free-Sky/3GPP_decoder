@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RadioPoint, Session } from "@/lib/engine/types";
-import { ChartLineIcon, TableIcon } from "@phosphor-icons/react";
+import type { ModemRadio, ModemSample, RadioPoint, Session } from "@/lib/engine/types";
+import { CellTowerIcon, ChartLineIcon, TableIcon } from "@phosphor-icons/react";
 import { MsgRef } from "./bits";
 import { CardHead } from "./summary-view";
 import { cn } from "@/lib/utils";
@@ -202,10 +202,213 @@ function MetricChart({ metric, points, onOpen }: { metric: Metric; points: Radio
   );
 }
 
+function tsMs(ts?: string | null) {
+  const m = /^(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/.exec(ts ?? "");
+  if (!m) return null;
+  return ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + Number((m[4] ?? "0").padEnd(3, "0"));
+}
+
+/** One metric of the modem's own serving cell samples, on a time axis. */
+function ModemChart({ metric, points }: { metric: Metric; points: ModemSample[] }) {
+  const m = METRICS[metric];
+  const data = useMemo(
+    () =>
+      points
+        .map((p) => ({ t: tsMs(p.ts), v: p[metric], p }))
+        .filter((d): d is { t: number; v: number; p: ModemSample } => d.t !== null && typeof d.v === "number"),
+    [points, metric],
+  );
+  const [wrapRef, width] = useWidth<HTMLDivElement>();
+  const [hover, setHover] = useState<number | null>(null);
+  const H = 176;
+  const pad = { l: 46, r: 14, t: 14, b: 26 };
+  const iw = width - pad.l - pad.r;
+  const ih = H - pad.t - pad.b;
+  const { lo, hi, ticks, t0, t1 } = useMemo(() => {
+    const vals = data.map((d) => d.v).concat(m.refs.map((r) => r.y));
+    const lo = Math.floor((Math.min(...vals) - m.step / 2) / m.step) * m.step;
+    let hi = Math.ceil((Math.max(...vals) + m.step / 2) / m.step) * m.step;
+    if (hi - lo < m.step * 2) hi = lo + m.step * 2;
+    const ticks: number[] = [];
+    for (let v = lo; v <= hi; v += m.step) ticks.push(v);
+    const t0 = data.length ? data[0].t : 0;
+    const t1 = data.length ? Math.max(data[data.length - 1].t, t0 + 1) : 1;
+    return { lo, hi, ticks, t0, t1 };
+  }, [data, m]);
+  if (!data.length) return null;
+  const x = (t: number) => pad.l + ((t - t0) / (t1 - t0)) * iw;
+  const y = (v: number) => pad.t + ((hi - v) / (hi - lo)) * ih;
+  // break the line where the modem logged nothing for a while
+  let path = "";
+  data.forEach((d, k) => {
+    const gap = k > 0 && d.t - data[k - 1].t > 3000;
+    path += `${k === 0 || gap ? "M" : "L"}${x(d.t).toFixed(1)},${y(d.v).toFixed(1)}`;
+  });
+  const vals = data.map((d) => d.v);
+  const h = hover != null ? data[hover] : null;
+  const pick = (clientX: number, rect: DOMRect) => {
+    const px = clientX - rect.left;
+    let best = 0;
+    let bd = Infinity;
+    data.forEach((d, k) => {
+      const dd = Math.abs(x(d.t) - px);
+      if (dd < bd) {
+        bd = dd;
+        best = k;
+      }
+    });
+    setHover(best);
+  };
+  const dense = data.length > 60;
+  return (
+    <figure className="surface rounded-2xl px-[18px] py-4">
+      <figcaption className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="flex items-center gap-2.5 text-[15.5px] font-bold text-foreground">
+          <span className="grad grid size-[30px] place-items-center rounded-[9px] text-white">
+            <ChartLineIcon weight="bold" className="size-[17px]" />
+          </span>
+          {m.title} <span className="font-medium text-muted-foreground">({m.unit})</span>
+        </span>
+        <span className="text-[12.5px] tabular-nums text-ink-2">
+          {data.length} samples, min {Math.min(...vals)}, max {Math.max(...vals)}, last {vals[vals.length - 1]} {m.unit}
+        </span>
+      </figcaption>
+      <div ref={wrapRef} className="relative mt-2">
+        <svg
+          width={width}
+          height={H}
+          role="img"
+          aria-label={`${m.title} over time, ${data.length} samples from the modem`}
+          tabIndex={0}
+          className="block touch-none outline-none focus-visible:ring-2 focus-visible:ring-[rgb(0_105_200/0.3)]"
+          onPointerMove={(e) => pick(e.clientX, e.currentTarget.getBoundingClientRect())}
+          onPointerLeave={() => setHover(null)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowRight") setHover((v) => Math.min(data.length - 1, (v ?? -1) + 1));
+            if (e.key === "ArrowLeft") setHover((v) => Math.max(0, (v ?? 1) - 1));
+          }}
+          onBlur={() => setHover(null)}
+        >
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={pad.l} x2={width - pad.r} y1={y(t)} y2={y(t)} stroke="var(--hairline)" strokeWidth={1} />
+              <text x={pad.l - 8} y={y(t)} dy="0.32em" textAnchor="end" className="fill-muted-foreground text-[10.5px] tabular-nums">
+                {t}
+              </text>
+            </g>
+          ))}
+          {m.refs.map((r) =>
+            r.y > lo && r.y < hi ? (
+              <g key={r.label}>
+                <line x1={pad.l} x2={width - pad.r} y1={y(r.y)} y2={y(r.y)} stroke="var(--muted-foreground)" strokeOpacity={0.45} strokeWidth={1} />
+                <text x={width - pad.r} y={y(r.y) - 4} textAnchor="end" className="fill-muted-foreground text-[10px]">
+                  {r.label}
+                </text>
+              </g>
+            ) : null,
+          )}
+          <path d={path} fill="none" stroke="var(--chart-line)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+          {data.map((d, k) => {
+            const alone = (k === 0 || d.t - data[k - 1].t > 3000) && (k === data.length - 1 || data[k + 1].t - d.t > 3000);
+            return !dense || alone ? (
+              <circle key={k} cx={x(d.t)} cy={y(d.v)} r={hover === k ? 5.5 : 3.5} fill="var(--chart-line)" stroke="#ffffff" strokeWidth={2} />
+            ) : null;
+          })}
+          {h ? (
+            <>
+              <line x1={x(h.t)} x2={x(h.t)} y1={pad.t} y2={H - pad.b} stroke="var(--accent-blue)" strokeOpacity={0.35} strokeWidth={1} />
+              <circle cx={x(h.t)} cy={y(h.v)} r={5.5} fill="var(--chart-line)" stroke="#ffffff" strokeWidth={2} />
+            </>
+          ) : null}
+          <text x={pad.l} y={H - 6} className="fill-muted-foreground text-[10.5px] tabular-nums">
+            {data[0].p.ts}
+          </text>
+          <text x={width - pad.r} y={H - 6} textAnchor="end" className="fill-muted-foreground text-[10.5px] tabular-nums">
+            {data[data.length - 1].p.ts}
+          </text>
+        </svg>
+        {h ? (
+          <div
+            role="tooltip"
+            className="pointer-events-none absolute top-1 z-10 w-52 rounded-[12px] border border-border bg-panel px-3 py-2 text-[12.5px] shadow-soft"
+            style={{ left: Math.min(Math.max(x(h.t) + 12, 0), width - 216) }}
+          >
+            <div className="text-[15px] font-semibold tabular-nums text-foreground">
+              {h.v} {m.unit}
+            </div>
+            <div className="text-muted-foreground">
+              {m.title}, {m.quality(h.v)}
+            </div>
+            <div className="mt-1.5 border-t border-hairline pt-1.5 text-muted-foreground">
+              {h.p.ts}
+              {h.p.pci != null ? `, PCI ${h.p.pci}` : ""}
+              {h.p.src ? `, ${h.p.src}` : ", modem trace"}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </figure>
+  );
+}
+
+function ModemSection({ modem }: { modem: ModemRadio }) {
+  const metrics = (["rsrp", "rsrq", "sinr"] as Metric[]).filter((k) => modem.points.some((p) => typeof p[k] === "number"));
+  const cell = modem.cells?.[0];
+  const stat = (k: Metric) => modem[k];
+  return (
+    <>
+      <section className="surface rounded-2xl px-[18px] py-4">
+        <CardHead
+          icon={CellTowerIcon}
+          title="Serving cell, from the modem"
+          sub="Measured by the modem itself (its traces and AT+CESQ), many times a second, not only when it sends a Measurement Report."
+        />
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-2.5">
+          {cell ? (
+            <div className="rounded-[12px] border border-border bg-panel-2 px-3.5 py-2.5">
+              <div className="text-[12.5px] font-medium text-muted-foreground">Cell</div>
+              <div className="mt-0.5 text-[15px] font-bold text-foreground">PCI {cell.pci}</div>
+              <div className="text-[12.5px] text-ink-2">
+                {cell.arfcn != null ? `NR-ARFCN ${cell.arfcn}` : ""}
+                {cell.band ? `, n${cell.band}` : ""}
+              </div>
+            </div>
+          ) : null}
+          {metrics.map((k) => {
+            const st = stat(k);
+            if (!st) return null;
+            const q = METRICS[k].quality(st.median);
+            return (
+              <div key={k} className="rounded-[12px] border border-border bg-panel-2 px-3.5 py-2.5">
+                <div className="text-[12.5px] font-medium text-muted-foreground">{METRICS[k].title} (median)</div>
+                <div className="mt-0.5 text-[15px] font-bold tabular-nums text-foreground">
+                  {st.median} {METRICS[k].unit}
+                </div>
+                <div className="text-[12.5px] text-ink-2">
+                  {q}, {st.min} to {st.max}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+      {metrics.map((k) => (
+        <ModemChart key={k} metric={k} points={modem.points} />
+      ))}
+    </>
+  );
+}
+
 export function RadioView({ session, onOpen }: { session: Session; onOpen: (i: number) => void }) {
   const pts = session.radio.points;
+  const modem = session.radio.modem;
   if (!pts.length) {
-    return (
+    return modem?.points.length ? (
+      <div className="flex flex-col gap-4">
+        <ModemSection modem={modem} />
+        <p className="text-[13.5px] text-muted-foreground">No Measurement Reports in this log, so there are no neighbour cell readings.</p>
+      </div>
+    ) : (
       <div className="surface rounded-2xl p-8 text-center text-[14px] text-muted-foreground">
         No measurement reports in this log. Radio quality appears here when the log contains LTE or NR Measurement Reports.
       </div>
@@ -214,8 +417,10 @@ export function RadioView({ session, onOpen }: { session: Session; onOpen: (i: n
   const metrics = (["rsrp", "rsrq", "sinr"] as Metric[]).filter((k) => pts.some((p) => typeof p[k] === "number"));
   return (
     <div className="flex flex-col gap-4">
+      {modem?.points.length ? <ModemSection modem={modem} /> : null}
       <p className="text-[14px] text-ink-2">
-        Serving cell quality from {pts.length} measurement {pts.length === 1 ? "report" : "reports"}, in log order. Hover or use the arrow keys for
+        {modem?.points.length ? "From the Measurement Reports the UE sent: s" : "S"}erving cell quality from {pts.length} measurement{" "}
+        {pts.length === 1 ? "report" : "reports"}, in log order. Hover or use the arrow keys for
         values; select a point to open its message.
       </p>
       {metrics.map((k) => (

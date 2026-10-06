@@ -30,7 +30,8 @@ inside 5GMM transport.
    - **Paste hex**: bare hex, `0x` lists, hexdumps with offsets, or Logel lines such as
      `14:02:17.442  LTE RRC DL_DCCH RRCConnectionReconfiguration` followed by the bytes.
      The box starts empty every time; nothing is saved between visits.
-   - **Upload file**: drop or browse a Logel text export (.txt, .log, .hex, .csv).
+   - **Upload log**: drop or browse a whole Logel armlog folder, its zip, the `.logel` on its
+     own, or a text export (.txt, .log, .hex). See "Logel captures" below.
    - **Examples**: five ready-made sessions, each with a different kind of problem, plus
      single messages to try one at a time.
 3. Leave **Protocol** on Auto-detect and press **Decode** (Ctrl+Enter). The channel named in
@@ -55,6 +56,27 @@ The results open on the **Summary** for a session, or on the **Message** for one
 **Home** goes back to the home page (and **Back to the results** returns), **Copy report**
 puts a Markdown RCA summary on the clipboard for tickets, and **JSON** saves the full decode.
 The look, colours, header and footer follow Skyworth Log Prism.
+
+## Logel captures (UNISOC armlog)
+
+Logel saves a capture as a folder (`<date>_armlog`) of about 40 files. Drop the folder, its
+zip or the `.logel` on **Upload log**, then **Analyse log**. The page unzips it itself and
+reads only what helps troubleshooting. The **Files** tab lists every file with what was done
+with it and why.
+
+| File | Used for |
+| --- | --- |
+| `<name>.logel` | Analysed: every RRC and NAS message with the channel the modem logged and a ms timestamp, the modem's serving cell RSRP / RSRQ / SINR traces, and its AT answers (+CESQ, +C5GREG, +COPS, +CGCONTRDP) |
+| `<name>.cap` | Analysed when it has packets: IP traffic, every DNS lookup and whether it was answered |
+| `<name>_lte.csv`, `_nr.csv` ... | Analysed when they hold rows: RSRP / SINR samples |
+| `.lst`, `_modem.ini`, `_log_stat.txt`, `_bookmark.xml` | Read for information: modem and Logel versions, lost packets, bug notes |
+| `msgview.*`, `traceview.*`, `phyparamchart.*` ... | Not needed: Logel's display cache, rebuilt from the `.logel` |
+| `.iq`, `.wvoice`, `_vt_*.bin`, DSP traces, `_bt.cap`, `_wcn.cap`, empty files | Not needed: radio samples, call media, chip traces or other chips |
+
+The `.logel` is a sequence of UNISOC diag packets. Only the protocol stack stream is read
+(the PHY stream, often 90 % of the file, needs UNISOC's trace database). Messages appear
+twice in such logs, once as the NAS message and once inside the RRC message that carries it;
+the analysis counts that as one attempt. Times are the capture PC's clock, as in Logel.
 
 Limits: ciphered NAS cannot be read without keys (Logel normally records NAS after
 deciphering, which decodes fine). MAC / RLC / PDCP headers and Logel's own record headers
@@ -102,12 +124,15 @@ decoder/engine/      Python decoder: protocol catalogue, auto-detection, tree wa
                      radio maths (EARFCN / NR-ARFCN / RSRP ...), cause-code knowledge base,
                      per-message insights and session analysis (procedures, root cause)
 decoder/tests/       unittest suite
-decoder/tools/       build_samples.py: the sample library, spec-encoded and verified
+decoder/engine/capture.py  modem log captures: logged channels, AT answers, modem radio, IP / DNS
+decoder/tools/       build_samples.py: the sample library, spec-encoded and verified;
+                     build_logel_fixture.py: a synthetic Logel armlog zip for the e2e test
 decoder/cli.py       decode a file from the terminal with the same engine
 scripts/build-engine.mjs   compiles the engine + the pycrate subset to bytecode inside Pyodide
 scripts/payload.mjs        embeds the runtime and engine in the page, adds the CSP
 src/                 React app (Vite, Tailwind, shadcn/ui on Base UI); src/lib/engine/worker.js
                      runs the decoder in a Web Worker
+src/lib/capture/     zip reader, .logel reader, pcap / DNS summary, and the file picker rules
 tests/e2e.mjs        end-to-end test of the published file
 ```
 

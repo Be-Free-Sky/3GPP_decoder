@@ -82,6 +82,7 @@ export function areaOfFinding(f: Finding): AreaId | null {
     case "network":
       return "registration";
     case "config":
+    case "data":
       return "data";
     case "procedure": {
       const t = f.title.toLowerCase();
@@ -126,7 +127,8 @@ export function buildAreas(report: Report): Area[] {
     const ps = procs.filter((p) => PROC_AREA[p.id] === id);
     const fs = findings.filter((f) => areaOfFinding(f) === id).sort((a, b) => RANK[a.severity] - RANK[b.severity]);
     const failed = ps.filter((p) => p.status === "failure");
-    const present = ps.length > 0 || fs.length > 0 || (id === "radio" && (s.radio.points.length > 0 || hasRrc));
+    const modem = s.radio.modem;
+    const present = ps.length > 0 || fs.length > 0 || (id === "radio" && (s.radio.points.length > 0 || hasRrc || Boolean(modem?.points.length)));
     const area: Area = {
       id,
       title: TITLES[id],
@@ -136,8 +138,8 @@ export function buildAreas(report: Report): Area[] {
       refs: [],
       target: { tab: "flow" },
     };
-    if (id === "radio" && s.radio.rsrp) {
-      const avg = s.radio.rsrp.avg;
+    if (id === "radio" && (s.radio.modem?.rsrp || s.radio.rsrp)) {
+      const avg = s.radio.modem?.rsrp?.median ?? s.radio.rsrp!.avg;
       area.bars = avg >= -90 ? 4 : avg >= -100 ? 3 : avg >= -110 ? 2 : 1;
     }
     if (!present) {
@@ -159,14 +161,18 @@ export function buildAreas(report: Report): Area[] {
       area.word = OK_WORD[id];
       const done = ps.filter((p) => p.status === "success").map(shortName);
       if (id === "radio") {
-        area.say = s.radio.rsrp
-          ? `Serving RSRP ${s.radio.rsrp.min} to ${s.radio.rsrp.max} dBm over ${s.radio.points.length} reports. No radio link failure or handover problem.`
-          : "No radio link failure or handover problem.";
-        area.target = s.radio.points.length ? { tab: "radio" } : { tab: "flow" };
+        area.say = modem?.rsrp
+          ? `Serving RSRP ${modem.rsrp.median} dBm` +
+            (modem.sinr ? `, SINR ${modem.sinr.median} dB` : "") +
+            ` (medians of ${modem.rsrp.n} modem samples). No radio link failure or handover problem.`
+          : s.radio.rsrp
+            ? `Serving RSRP ${s.radio.rsrp.min} to ${s.radio.rsrp.max} dBm over ${s.radio.points.length} reports. No radio link failure or handover problem.`
+            : "No radio link failure or handover problem.";
+        area.target = s.radio.points.length || modem?.points.length ? { tab: "radio" } : { tab: "flow" };
       } else if (id === "data") {
         const ctx = s.context.data;
         const apn = ctx.find((c) => c.label === "APN / DNN")?.value;
-        const ip = ctx.find((c) => c.label === "IP address")?.value;
+        const ip = (ctx.find((c) => c.label === "IP address (AT)") ?? ctx.find((c) => c.label === "IP address"))?.value;
         area.say =
           (done.length ? `${listJoin(done)} completed` : "Session messages decoded") +
           (apn ? ` on ${apn}` : "") +

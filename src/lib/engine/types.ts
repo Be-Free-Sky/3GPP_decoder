@@ -100,7 +100,7 @@ export interface DecodeResult {
   text?: string;
   status?: Status;
   detection?: {
-    mode: "manual" | "hint" | "auto";
+    mode: "manual" | "hint" | "auto" | "log";
     confidence: "high" | "medium" | "low" | "none" | "manual";
     score?: number;
     alternatives: Alternative[];
@@ -162,7 +162,69 @@ export interface ContextItem {
   label: string;
   value: string;
   hint?: string | null;
-  from: number;
+  /** message the value came from; null for values from the capture's AT answers or traces */
+  from: number | null;
+}
+
+/** Serving cell samples from the modem's own traces and AT+CESQ (capture logs). */
+export interface ModemSample {
+  ts?: string | null;
+  rsrp?: number;
+  rsrq?: number;
+  sinr?: number;
+  pci?: number;
+  arfcn?: number;
+  src?: string;
+}
+
+export interface Stat {
+  min: number;
+  max: number;
+  avg: number;
+  median: number;
+  n: number;
+}
+
+export interface ModemRadio {
+  points: ModemSample[];
+  rsrp?: Stat;
+  rsrq?: Stat;
+  sinr?: Stat;
+  cells?: { pci: number; arfcn?: number; band?: number }[];
+}
+
+export interface CaptureFileInfo {
+  path: string;
+  name: string;
+  size: number;
+  role: "analysed" | "info" | "skipped";
+  label: string;
+  reason: string;
+  detail?: string;
+}
+
+export interface CaptureInfo {
+  name?: string;
+  kind?: string;
+  files?: CaptureFileInfo[];
+  device?: Record<string, string>;
+  stats?: { lostCount: number; lostPercent?: number; totalPackets?: number };
+  ip?: {
+    packets: number;
+    ul: number;
+    dl: number;
+    bytes: number;
+    tcp: number;
+    udp: number;
+    icmp: number;
+    tcpResets: number;
+    first: string | null;
+    last: string | null;
+    dns: { ts: string; name: string; type: string; rcode: number | null; answers: number; answered?: boolean; rttMs?: number }[];
+    servers: string[];
+  };
+  span?: { date: string | null; start: string | null; end: string | null };
+  notes?: string[];
 }
 
 export interface Session {
@@ -171,8 +233,8 @@ export interface Session {
   lanes: string[];
   procedures: Procedure[];
   findings: Finding[];
-  radio: { points: RadioPoint[]; rsrp?: { min: number; max: number; avg: number } };
-  context: { network: ContextItem[]; ue: ContextItem[]; radio: ContextItem[]; data: ContextItem[] };
+  radio: { points: RadioPoint[]; rsrp?: { min: number; max: number; avg: number }; modem?: ModemRadio };
+  context: { network: ContextItem[]; ue: ContextItem[]; radio: ContextItem[]; data: ContextItem[]; device?: ContextItem[] };
   kpis: {
     messages: number;
     decoded: number;
@@ -197,6 +259,8 @@ export interface Report {
   truncated: boolean;
   messages: MessageEntry[];
   session: Session | null;
+  /** present when the input was a modem log capture (zip, folder, .logel) */
+  capture?: CaptureInfo;
 }
 
 export interface CatalogProtocol {

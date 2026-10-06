@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import {
   ArrowLeftIcon,
@@ -16,15 +16,15 @@ import {
   SparkleIcon,
   UploadSimpleIcon,
 } from "@phosphor-icons/react";
-import { toast } from "sonner";
 import samples from "@/data/samples.json";
+import type { CaptureSource } from "@/lib/capture";
 import { InputPanel, type InputProps } from "./input-panel";
+import { UploadPane } from "./upload-pane";
 import { EngineStatus } from "./engine-status";
 import { SiteFooter } from "./brand";
 import { cn } from "@/lib/utils";
 
 const EASE = [0.23, 1, 0.32, 1] as const;
-const MAX_FILE = 25 * 1024 * 1024;
 
 type SessionSample = { id: string; title: string; description: string; text: string };
 type SingleSample = { id: string; title: string; group: string; hex: string };
@@ -98,57 +98,26 @@ type Pane = "paste" | "file" | "examples";
 
 const PANES: { id: Pane; label: string; short: string; icon: typeof ClipboardTextIcon }[] = [
   { id: "paste", label: "Paste hex", short: "Paste", icon: ClipboardTextIcon },
-  { id: "file", label: "Upload file", short: "Upload", icon: UploadSimpleIcon },
+  { id: "file", label: "Upload log", short: "Upload", icon: UploadSimpleIcon },
   { id: "examples", label: "Examples", short: "Examples", icon: BookOpenIcon },
 ];
-
-/** Looks like a binary capture rather than a text export. */
-function isBinary(text: string) {
-  const head = text.slice(0, 4096);
-  if (!head) return false;
-  let odd = 0;
-  for (let i = 0; i < head.length; i++) {
-    const c = head.charCodeAt(i);
-    if (c === 0xfffd || c < 9 || (c > 13 && c < 32)) odd++;
-  }
-  return odd / head.length > 0.02;
-}
 
 export function Landing({
   input,
   onFile,
+  onCapture,
   onSample,
   resume,
 }: {
   input: InputProps;
   onFile: (name: string, text: string) => void;
+  onCapture: (source: CaptureSource) => void;
   onSample: (title: string, text: string) => void;
   /** offered when a decode is still in memory */
   resume: { label: string; onResume: () => void } | null;
 }) {
   const reduce = useReducedMotion();
   const [pane, setPane] = useState<Pane>("paste");
-  const [over, setOver] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  const readFile = async (file: File | undefined) => {
-    if (!file) return;
-    if (file.size > MAX_FILE) {
-      toast.error(`${file.name} is ${(file.size / 1048576).toFixed(0)} MB. Export only the messages you need, up to 25 MB.`);
-      return;
-    }
-    const text = await file.text();
-    if (isBinary(text)) {
-      toast.error("This looks like a binary capture. Export the messages from Logel as text with hex, then open that file.");
-      return;
-    }
-    if (!/[0-9a-fA-F]{2}/.test(text)) {
-      toast.error(`No hex found in ${file.name}.`);
-      return;
-    }
-    onFile(file.name, text);
-  };
-
   const enter = (i: number) =>
     reduce
       ? {}
@@ -232,58 +201,7 @@ export function Landing({
 
           {pane === "file" ? (
             <div id="pane-file" role="tabpanel" aria-labelledby="tab-file" className="flex flex-1 flex-col">
-              <label
-                htmlFor="file-input"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    fileRef.current?.click();
-                  }
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setOver(true);
-                }}
-                onDragLeave={() => setOver(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setOver(false);
-                  readFile(e.dataTransfer.files[0]);
-                }}
-                className={cn(
-                  "flex min-h-[260px] flex-1 cursor-pointer flex-col items-center justify-center gap-2.5 rounded-[18px] border-[1.5px] border-dashed border-line-3 bg-gradient-to-b from-hover to-transparent px-[18px] py-7 text-center transition-[border-color,box-shadow,background-color] duration-200 hover:border-blue hover:bg-accent hover:shadow-[0_0_0_5px_rgb(0_105_200/0.1)]",
-                  over && "border-blue bg-accent shadow-[0_0_0_5px_rgb(0_105_200/0.1)]",
-                )}
-              >
-                <span className="grad mb-1.5 grid size-[68px] place-items-center rounded-[20px] text-white shadow-[0_14px_34px_-10px_rgb(1_138_190/0.65)]">
-                  <UploadSimpleIcon weight="bold" className="size-[30px]" />
-                </span>
-                <span className="text-[23px] font-bold tracking-[-0.01em] text-foreground">Drop a Logel export here</span>
-                <span className="text-[16px] text-ink-2">
-                  or <u className="font-semibold text-link underline-offset-[3px]">browse files</u>
-                </span>
-                <input
-                  ref={fileRef}
-                  id="file-input"
-                  type="file"
-                  accept=".txt,.log,.hex,.csv,.tsv,text/plain"
-                  hidden
-                  onChange={(e) => {
-                    readFile(e.target.files?.[0]);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-              <div className="mx-1.5 mb-1.5 mt-3 flex flex-wrap items-center justify-center gap-1.5 text-[13.5px] text-muted-foreground">
-                <span>Reads</span>
-                {[".txt", ".log", ".hex", ".csv"].map((f) => (
-                  <span key={f} className="rounded-md border border-border bg-panel px-1.5 py-px font-mono text-[12.5px] text-ink-2">
-                    {f}
-                  </span>
-                ))}
-                <span className="basis-full text-center">Text exports: raw hex, hexdumps, or Logel lines with a timestamp and channel.</span>
-              </div>
+              <UploadPane onText={onFile} onCapture={onCapture} busy={input.decoding} />
             </div>
           ) : null}
 

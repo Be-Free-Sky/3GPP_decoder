@@ -1,0 +1,178 @@
+"""Build a synthetic UNISOC Logel armlog (zip) for the end-to-end test.
+
+It uses the 5G SA registration-reject sample session, written in the same binary layout
+as a real .logel (see src/lib/capture/logel.ts), next to the other files Logel saves:
+an IP capture with DNS, version files, empty files and a Logel view cache. No real
+device data is involved.
+
+    python decoder/tools/build_logel_fixture.py OUT.zip
+"""
+
+import json
+import struct
+import sys
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+NAME = "2026_01_15_09_14_00_000"
+
+RRC_CODE = {"BCCH_BCH": 1, "BCCH_DL_SCH": 2, "PCCH": 3, "DL_CCCH": 4, "DL_DCCH": 5, "UL_CCCH": 6, "UL_DCCH": 7}
+START_TICK = 500_000
+PC_START_MS = 1_768_468_440_000  # 2026-01-15 09:14:00.000, stored as if UTC (like Logel)
+
+
+def packet(typ, sub, data, seq=0):
+    return struct.pack("<IIHBB", 8 + len(data), seq, 8 + len(data), typ, sub) + data
+
+
+def pad4(b):
+    return b + b"\x00" * (-len(b) % 4)
+
+
+def signal(grp, code, snd, rcv, tick, pdu, body_len=12):
+    body = struct.pack("<HHHH", 0x1C, 8 + body_len, 0, body_len) + bytes(body_len)
+    sec = struct.pack("<HH", 0x28, len(pdu)) + pdu
+    hdr = bytearray(48)
+    hdr[0] = 1
+    hdr[8:12] = bytes([5, 7, snd, rcv])
+    hdr[12] = grp
+    struct.pack_into("<H", hdr, 14, code)
+    hdr[16] = 1
+    struct.pack_into("<HH", hdr, 18, 8 + body_len, 8 + body_len)
+    hdr[28:31] = b"\x01\x02\x00"
+    struct.pack_into("<HH", hdr, 32, len(pdu), len(pdu))
+    struct.pack_into("<I", hdr, 40, tick)
+    rec = pad4(b"\x00\x00\x30\x00" + bytes(hdr) + body + sec)
+    return struct.pack("<II", 0x20F, len(rec) // 4) + rec
+
+
+def trace(fmt, args=()):
+    s = pad4(fmt.encode() + b"\x00")
+    info = len(args) | ((len(s) // 4) << 5)
+    payload = struct.pack("<I", info) + s + b"".join(struct.pack("<i", a) for a in args)
+    return struct.pack("<II", 0x3F, len(payload) // 4) + payload
+
+
+def build_logel(session):
+    items = []  # (tick, bytes)
+    lines = session["text"].splitlines()
+    t0 = None
+    for i in range(0, len(lines) - 1):
+        head = lines[i].split()
+        if len(head) < 4 or ":" not in head[0]:
+            continue
+        h, m, s = head[0].split(":")
+        ms = (int(h) * 3600 + int(m) * 60 + float(s)) * 1000
+        t0 = ms if t0 is None else t0
+        tick = START_TICK + int(ms - t0)
+        pdu = bytes.fromhex(lines[i + 1].replace(" ", ""))
+        if head[1] in ("NR5G", "NR") and head[2] == "RRC":
+            items.append((tick, signal(249, RRC_CODE[head[3]], 177, 177, tick, pdu)))
+        elif "NAS" in head:
+            items.append((tick, signal(198, 9680, 170, 170, tick, pdu, body_len=204)))
+    # modem radio traces: serving cell, RSRP every 120 ms, SINR from the PHY summary
+    last = items[-1][0]
+    for k, tick in enumerate(range(START_TICK, last + 1, 120)):
+        if k % 10 == 0:
+            items.append((tick, trace("NRRC: Get NR Serving cell info, pci:%x,afrcn:%x,bandwidth:%x", (101, 627264, 100))))
+        items.append((tick, trace("A2 rsrp enter Ms = %d hys = %d a2_Threshold = %d isSatifiesCell = %d", (-8850 - (k % 7) * 40, 0, -10500, 0))))
+        if k % 4 == 0:
+            items.append((tick, trace("NRRC: nreng_get_phy_static_info,dl bler:%d,ul bler:%d,tx power:%d,sinr:%d", (0, 0, 100, 1450 - k * 10))))
+    # AT answers the modem sent to the host
+    for tick, line in ((START_TICK + 50, '+C5GREG: 2,2'), (START_TICK + 400, '+CESQ: 99,99,255,255,255,255,72,68,70'),
+                       (last + 30, '+C5GREG: 2,3'), (last + 40, '+COPS: 0,0,"Test Network",11')):
+        items.append((tick, trace(line + "\r\n")))
+    items.sort(key=lambda x: x[0])
+
+    out = bytearray()
+    out += packet(0xD1, 0x65, struct.pack("<II", 7, 0x10101))
+    out += packet(0xD1, 0x80, struct.pack("<QI", PC_START_MS, START_TICK), seq=0xFFFF)
+    # cut the item stream into fixed packets so some items cross a packet boundary
+    stream = bytearray()
+    ticks = []
+    for tick, b in items:
+        ticks.append((len(stream), tick))
+        stream += b
+    seq = 0x100
+    pos = 0
+    chunk = 700
+    while pos < len(stream):
+        tick = max(t for o, t in ticks if o <= pos)
+        part = bytes(stream[pos:pos + chunk])
+        out += packet(0xF8, 0xFF, struct.pack("<III", 0, 1000, tick) + bytes(12) + part, seq=seq)
+        seq += 1
+        pos += chunk
+        if seq == 0x102:
+            out += packet(0x00, 0x00, b"\nPlatform Version: MOCORTM_TEST\nProject Version:   Fixture_NR_modem\n")
+            out += packet(0x05, 0x11, struct.pack("<IIII", 0, PC_START_MS // 1000 + 3, 0, START_TICK + 3000))
+    # a PHY stream that holds nothing readable
+    out += packet(0xD1, 0x81, struct.pack("<QI", PC_START_MS, 7000))
+    for k in range(3):
+        out += packet(0xF8, 0xFE, struct.pack("<III", 0, 1000, 7000 + k) + bytes(12) + bytes(range(256)) * 4, seq=0x9000 + k)
+    return bytes(out)
+
+
+def dns(qid, name, qtype, response=False, rcode=0, answers=0):
+    q = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00" + struct.pack(">HH", qtype, 1)
+    flags = 0x8180 | rcode if response else 0x0100
+    msg = struct.pack(">HHHHHH", qid, flags, 1, answers, 0, 0) + q
+    for _ in range(answers):
+        msg += b"\xc0\x0c" + struct.pack(">HHIH", qtype, 1, 60, 16 if qtype == 28 else 4) + bytes(16 if qtype == 28 else 4)
+    return msg
+
+
+def ip6_udp(src, dst, sport, dport, payload):
+    udp = struct.pack(">HHHH", sport, dport, 8 + len(payload), 0) + payload
+    return struct.pack(">IHBB", 0x60000000, len(udp), 17, 64) + src + dst + udp
+
+
+def build_pcap():
+    ue = bytes.fromhex("24090000000000000000000000000001")
+    dns_srv = bytes.fromhex("24050000000000000000000000000011")
+    pkts = [
+        (1.0, 1, ip6_udp(ue, dns_srv, 40000, 53, dns(1, "connectivity.example.net", 28))),
+        (1.03, 2, ip6_udp(dns_srv, ue, 53, 40000, dns(1, "connectivity.example.net", 28, True, 0, 1))),
+        (2.0, 1, ip6_udp(ue, dns_srv, 40001, 53, dns(2, "nosuch.example.net", 1))),
+        (2.04, 2, ip6_udp(dns_srv, ue, 53, 40001, dns(2, "nosuch.example.net", 1, True, 3))),
+        (3.0, 1, ip6_udp(ue, dns_srv, 40002, 53, dns(3, "silent.example.net", 1))),
+        (9.0, 1, ip6_udp(ue, dns_srv, 40003, 53, dns(4, "late.example.net", 1))),
+        (12.5, 2, ip6_udp(dns_srv, ue, 53, 40003, dns(4, "late.example.net", 1, True, 0, 1))),
+    ]
+    out = bytearray(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
+    for k, (dt, direction, ip) in enumerate(pkts):
+        frame = struct.pack("<I", k) + bytes([0, direction]) + bytes(6) + b"\x86\xdd" + ip
+        sec = PC_START_MS // 1000 + int(dt)
+        usec = int(round((dt % 1) * 1e6))
+        out += struct.pack("<IIII", sec, usec, len(frame), len(frame)) + frame
+    return bytes(out)
+
+
+def main(out_path):
+    samples = json.loads((ROOT / "src" / "data" / "samples.json").read_text(encoding="utf-8"))
+    session = next(s for s in samples["sessions"] if s["id"] == "nr-sa-slice-reject")
+    folder = f"{NAME}_armlog/"
+    empty_pcap = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
+    files = {
+        f"{NAME}.logel": build_logel(session),
+        f"{NAME}.cap": build_pcap(),
+        f"{NAME}_lte.cap": empty_pcap,
+        f"{NAME}_bt.cap": b"",
+        f"{NAME}.iq": b"",
+        f"{NAME}.lst": b"Start Logging[LittleEndian]\r\nModem Version: TEST_MODEM_1.0\r\nTool Version: R9.0.0.0\r\nStop Logging\r\n",
+        f"{NAME}_modem.ini": b"[Modem Version]\r\nPlatformVersion=MOCORTM_TEST\r\nProjectVersion=Fixture_NR_modem\r\nHWVersion=test_modem\r\n",
+        f"{NAME}_log_stat.txt": b"[Lost Statistics]\r\nTotal lost=0.00\r\nTotal lost count=0\r\nTotal package=12\r\n",
+        f"{NAME}_lte.csv": b"LTE, SIM ID, UE time, EARFCN(Band), PCID, RSRP, SINR\r\n",
+        f"{NAME}_bookmark.xml": b'<?xml version="1.0" ?>\r\n<Bookmark Version="1.0" BugID="">\r\n    <Summary></Summary>\r\n</Bookmark>\r\n',
+        f"{NAME}/msgview.dat": bytes(4096),
+        f"{NAME}/msgview.pbs": b"MSG " + bytes(1020),
+    }
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(folder + name, data)
+    print(out_path)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "build" / "fixtures" / "armlog_fixture.zip"))

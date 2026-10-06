@@ -10,6 +10,7 @@
  *
  * main -> worker  { type: "boot", assets }   assets: name -> { data: base64, gz: bool }
  *                 { id, type: "decode", text, protocol, split, overrides }
+ *                 { id, type: "capture", capture }   (a modem log capture, see decoder/engine/capture.py)
  * worker -> main  { type: "progress", stage, label }
  *                 { type: "ready", catalog, info }   { type: "fatal", error }
  *                 { id, type: "result", data } | { id, type: "error", error }
@@ -106,15 +107,21 @@ _catalog.asn1_module("RRCNR")
   post({ type: "ready", catalog, info });
 }
 
-async function decode({ text, protocol, split, overrides }) {
+async function decode(msg) {
   if (!py) throw new Error("The decoder engine failed to start. Reload the page to try again.");
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      py.globals.set("_TEXT", text);
-      py.globals.set("_PROTO", protocol || "auto");
-      py.globals.set("_SPLIT", split || "auto");
-      py.globals.set("_OVR", JSON.stringify(overrides || {}));
-      const out = py.runPython("json.dumps(engine.decode_text(_TEXT, _PROTO, _SPLIT, json.loads(_OVR)), default=str)");
+      let out;
+      if (msg.type === "capture") {
+        py.globals.set("_CAP", msg.capture);
+        out = py.runPython("json.dumps(engine.decode_capture(json.loads(_CAP)), default=str)");
+      } else {
+        py.globals.set("_TEXT", msg.text);
+        py.globals.set("_PROTO", msg.protocol || "auto");
+        py.globals.set("_SPLIT", msg.split || "auto");
+        py.globals.set("_OVR", JSON.stringify(msg.overrides || {}));
+        out = py.runPython("json.dumps(engine.decode_text(_TEXT, _PROTO, _SPLIT, json.loads(_OVR)), default=str)");
+      }
       return JSON.parse(out);
     } catch (err) {
       // The large interface definitions ship as separate blocks, unpacked on first use.
@@ -141,7 +148,7 @@ self.onmessage = async (e) => {
     booting = booting || boot(msg.assets).catch((err) => post({ type: "fatal", error: cleanError(err) }));
     return;
   }
-  if (msg.type === "decode") {
+  if (msg.type === "decode" || msg.type === "capture") {
     try {
       await booting;
       const data = await decode(msg);

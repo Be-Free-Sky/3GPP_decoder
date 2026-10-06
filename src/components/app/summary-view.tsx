@@ -24,6 +24,7 @@ import { buildAreas, buildHeadline, type Area, type AreaStatus } from "@/lib/are
 import { copyText, fmtMs } from "@/lib/format";
 import { reportToMarkdown } from "@/lib/report-md";
 import { FindingCard } from "./finding-card";
+import { FilesSummary } from "./files-view";
 import { cn } from "@/lib/utils";
 
 const EASE = [0.23, 1, 0.32, 1] as const;
@@ -102,7 +103,7 @@ function Bars({ n }: { n: number }) {
 function AreaTile({ a, onGo }: { a: Area; onGo: (a: Area) => void }) {
   const Icon = AREA_ICON[a.id];
   return (
-    <article className={cn("flex flex-col gap-2.5 rounded-[18px] border border-t-4 border-border bg-panel px-[18px] pb-3.5 pt-4 shadow-lift", TILE_TOP[a.status])}>
+    <article className={cn("flex w-full flex-col gap-2.5 rounded-[18px] border border-t-4 border-border bg-panel px-[18px] pb-3.5 pt-4 shadow-lift", TILE_TOP[a.status])}>
       <div className="flex items-center gap-2.5">
         <span className="grad grid size-[30px] shrink-0 place-items-center rounded-[9px] text-white">
           <Icon weight="bold" className="size-[17px]" />
@@ -159,7 +160,7 @@ export function SummaryView({
 }: {
   report: Report;
   onOpen: (i: number) => void;
-  onTab: (t: "flow" | "radio" | "messages") => void;
+  onTab: (t: "flow" | "radio" | "messages" | "files") => void;
 }) {
   const s = report.session!;
   const reduce = useReducedMotion();
@@ -248,7 +249,7 @@ export function SummaryView({
           <GhostButton icon={FlowArrowIcon} onClick={() => onTab("flow")}>
             Signalling flow
           </GhostButton>
-          {s.radio.points.length ? (
+          {s.radio.points.length || s.radio.modem?.points.length ? (
             <GhostButton icon={ChartLineIcon} onClick={() => onTab("radio")}>
               Radio quality
             </GhostButton>
@@ -356,6 +357,8 @@ export function SummaryView({
           </div>
         </section>
       ) : null}
+
+      {report.capture?.files?.length ? <FilesSummary capture={report.capture} onAll={() => onTab("files")} /> : null}
 
       <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
         <InfoIcon weight="bold" className="size-[15px]" />

@@ -48,6 +48,30 @@ export function reportToMarkdown(report: Report): string {
     }
     if (s.findings.length) out.push("## Findings", "", ...s.findings.map(findingMd), "");
   }
+  const cap = report.capture;
+  if (cap) {
+    out.push("## Capture", "");
+    if (cap.name) out.push(`Log: ${cap.name}${cap.span?.date ? `, ${cap.span.date} ${cap.span.start ?? ""} to ${cap.span.end ?? ""}` : ""}`);
+    const dev = cap.device ?? {};
+    const devText = [dev.modem && `modem ${dev.modem}`, dev.hw && `hardware ${dev.hw}`, dev.tool && `Logel ${dev.tool}`].filter(Boolean).join(", ");
+    if (devText) out.push(`Device: ${devText}`);
+    const m = s?.radio.modem;
+    if (m?.rsrp) {
+      const cell = m.cells?.[0];
+      out.push(
+        `Serving cell (modem, medians): ${cell ? `PCI ${cell.pci}${cell.band ? ` n${cell.band}` : ""}, ` : ""}RSRP ${m.rsrp.median} dBm` +
+          (m.rsrq ? `, RSRQ ${m.rsrq.median} dB` : "") +
+          (m.sinr ? `, SINR ${m.sinr.median} dB` : ""),
+      );
+    }
+    if (cap.ip) {
+      const bad = cap.ip.dns.filter((q) => q.answered === false || (q.rcode != null && q.rcode !== 0));
+      out.push(`IP capture: ${cap.ip.packets} packets, ${cap.ip.dns.length} DNS lookups${bad.length ? `, ${bad.length} failed or unanswered` : ", all answered"}`);
+    }
+    const used = (cap.files ?? []).filter((f) => f.role === "analysed").map((f) => f.name);
+    if (used.length) out.push(`Files analysed: ${used.join(", ")} (${cap.files!.length} files in the log)`);
+    out.push("");
+  }
   out.push("## Messages", "");
   report.messages.forEach((m) => out.push(messageMd(m.result, m.index, m.timestamp), ""));
   return out.join("\n");
