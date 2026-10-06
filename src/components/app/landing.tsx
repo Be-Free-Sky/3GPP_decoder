@@ -129,35 +129,54 @@ export function Landing({
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <main className="mx-auto grid w-full max-w-[1100px] flex-1 grid-cols-1 content-center px-[clamp(16px,4vw,40px)] pb-6 pt-[clamp(20px,4vh,40px)] min-[1100px]:max-w-[1480px] min-[1100px]:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] min-[1100px]:gap-x-[clamp(36px,4vw,72px)] min-[1100px]:px-[clamp(24px,3.4vw,48px)] min-[1100px]:pb-1 min-[1100px]:pt-[18px]">
-        <motion.section
-          {...enter(0)}
-          className="mx-auto mb-[26px] mt-2.5 max-w-[840px] text-center min-[1100px]:col-start-1 min-[1100px]:row-start-1 min-[1100px]:m-0 min-[1100px]:max-w-none min-[1100px]:self-end min-[1100px]:text-left"
-        >
-          {resume ? (
-            <button
-              onClick={resume.onResume}
-              className="press mb-3.5 inline-flex h-[38px] items-center gap-2 rounded-[11px] border border-line-2 bg-white/70 px-4 text-[13.5px] font-semibold text-foreground transition-[background-color,border-color] duration-150 hover:border-line-3 hover:bg-hover-2"
-            >
-              <ArrowLeftIcon weight="bold" className="size-4" />
-              {resume.label}
-            </button>
-          ) : null}
-          <h1 className="mb-4 mt-2 text-[clamp(40px,7vw,76px)] font-bold leading-[1.04] tracking-[-0.045em] min-[1100px]:mb-2.5 min-[1100px]:mt-0 min-[1100px]:text-[clamp(52px,4.4vw,76px)]">
-            <span className="text-foreground">Skyworth</span> <span className="text-brand-gradient">3GPP Decoder</span>
-          </h1>
-          <p className="mx-auto mb-2.5 text-[clamp(21px,3vw,30px)] font-bold tracking-[-0.01em] text-ink-2 min-[1100px]:mx-0 min-[1100px]:mb-2">
-            Turn modem hex into answers.
-          </p>
-          <p className="mx-auto max-w-[720px] text-balance text-[clamp(16.5px,2.2vw,20.5px)] leading-relaxed text-ink-2 min-[1100px]:mx-0">
-            Paste LTE or 5G signalling from Logel. See what went wrong and how to fix it, in plain words.
-          </p>
-        </motion.section>
+      <main className="mx-auto grid w-full max-w-[1100px] flex-1 grid-cols-1 content-start px-[clamp(16px,4vw,40px)] pb-6 pt-[clamp(20px,4vh,40px)] min-[1100px]:max-w-[1480px] min-[1100px]:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] min-[1100px]:gap-x-[clamp(36px,4vw,72px)] min-[1100px]:items-start min-[1100px]:px-[clamp(24px,3.4vw,48px)] min-[1100px]:pb-1 min-[1100px]:pt-[clamp(28px,7vh,72px)]">
+        <div className="contents min-[1100px]:col-start-1 min-[1100px]:row-start-1 min-[1100px]:block">
+          <motion.section
+            {...enter(0)}
+            className="order-1 mx-auto mb-[26px] mt-2.5 max-w-[840px] text-center min-[1100px]:m-0 min-[1100px]:max-w-none min-[1100px]:text-left"
+          >
+            {resume ? (
+              <button
+                onClick={resume.onResume}
+                className="press mb-3.5 inline-flex h-[38px] items-center gap-2 rounded-[11px] border border-line-2 bg-white/70 px-4 text-[13.5px] font-semibold text-foreground transition-[background-color,border-color] duration-150 hover:border-line-3 hover:bg-hover-2"
+              >
+                <ArrowLeftIcon weight="bold" className="size-4" />
+                {resume.label}
+              </button>
+            ) : null}
+            <h1 className="mb-4 mt-2 text-[clamp(40px,7vw,76px)] font-bold leading-[1.04] tracking-[-0.045em] min-[1100px]:mb-2.5 min-[1100px]:mt-0 min-[1100px]:text-[clamp(52px,4.4vw,76px)]">
+              <span className="text-foreground">Skyworth</span> <span className="text-brand-gradient">3GPP Decoder</span>
+            </h1>
+            <p className="mx-auto mb-2.5 text-[clamp(21px,3vw,30px)] font-bold tracking-[-0.01em] text-ink-2 min-[1100px]:mx-0 min-[1100px]:mb-2">
+              Turn modem hex into answers.
+            </p>
+            <p className="mx-auto max-w-[720px] text-balance text-[clamp(16.5px,2.2vw,20.5px)] leading-relaxed text-ink-2 min-[1100px]:mx-0">
+              Paste LTE or 5G signalling from Logel. See what went wrong and how to fix it, in plain words.
+            </p>
+          </motion.section>
+
+
+          <section aria-label="Features" className="order-3 mt-7 grid grid-cols-1 content-start gap-3 min-[521px]:grid-cols-2 min-[1100px]:mt-[22px]">
+            {FEATURES.map((f, i) => (
+              <motion.div
+                key={f.title}
+                {...enter(i + 2)}
+                className="grid grid-cols-[auto_minmax(0,1fr)] content-start items-start gap-x-3.5 rounded-[18px] border border-border bg-white/70 px-[18px] py-4 shadow-lift min-[1100px]:px-4 min-[1100px]:py-3.5"
+              >
+                <span className="row-span-2 grid size-[38px] place-items-center rounded-[11px] text-white" style={{ background: f.tile }}>
+                  <f.icon weight="bold" className="size-5" />
+                </span>
+                <h3 className="mb-1 mt-px text-[17px] font-bold tracking-[-0.01em] text-foreground">{f.title}</h3>
+                <p className="text-[14.5px] leading-[1.55] text-ink-2">{f.text}</p>
+              </motion.div>
+            ))}
+          </section>
+        </div>
 
         <motion.section
           {...enter(1)}
           aria-label="Open a log"
-          className="glass mx-auto flex w-full max-w-[800px] flex-col rounded-[24px] p-2.5 min-[1100px]:col-start-2 min-[1100px]:row-span-2 min-[1100px]:row-start-1 min-[1100px]:max-w-none"
+          className="glass order-2 mx-auto flex w-full max-w-[800px] flex-col rounded-[24px] p-2.5 min-[1100px]:col-start-2 min-[1100px]:row-start-1 min-[1100px]:max-w-none"
         >
           <div
             role="tablist"
@@ -285,22 +304,6 @@ export function Landing({
             <EngineStatus />
           </div>
         </motion.section>
-
-        <section aria-label="Features" className="mt-7 grid grid-cols-1 content-start gap-3 self-start min-[521px]:grid-cols-2 min-[1100px]:col-start-1 min-[1100px]:row-start-2 min-[1100px]:mt-[22px]">
-          {FEATURES.map((f, i) => (
-            <motion.div
-              key={f.title}
-              {...enter(i + 2)}
-              className="grid grid-cols-[auto_minmax(0,1fr)] content-start items-start gap-x-3.5 rounded-[18px] border border-border bg-white/70 px-[18px] py-4 shadow-lift min-[1100px]:px-4 min-[1100px]:py-3.5"
-            >
-              <span className="row-span-2 grid size-[38px] place-items-center rounded-[11px] text-white" style={{ background: f.tile }}>
-                <f.icon weight="bold" className="size-5" />
-              </span>
-              <h3 className="mb-1 mt-px text-[17px] font-bold tracking-[-0.01em] text-foreground">{f.title}</h3>
-              <p className="text-[14.5px] leading-[1.55] text-ink-2">{f.text}</p>
-            </motion.div>
-          ))}
-        </section>
       </main>
       <SiteFooter big className="mx-auto my-5 w-[calc(min(1100px,100%)-2*clamp(16px,4vw,40px))] min-[1100px]:my-4 min-[1100px]:w-[calc(min(1480px,100%)-2*clamp(24px,3.4vw,48px))]" />
     </div>

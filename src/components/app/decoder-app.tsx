@@ -14,8 +14,9 @@ import { toast } from "sonner";
 import { engine } from "@/lib/engine/client";
 import type { CaptureInfo, Report, SplitMode } from "@/lib/engine/types";
 import { prepareCapture, type CaptureSource } from "@/lib/capture";
-import { copyText, downloadFile, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
+import { downloadFile, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
 import { reportToMarkdown } from "@/lib/report-md";
+import { TAB_TITLE, copyHtml, emailHtml, fileHtml, type ReportTab } from "@/lib/report-html";
 import { AppBar, type TabDef } from "./app-bar";
 import { Landing } from "./landing";
 import { MessageList } from "./message-list";
@@ -70,6 +71,7 @@ export function DecoderApp() {
   const [view, setView] = useState<View>("home");
   const [phase, setPhase] = useState<string | null>(null);
   const [failedCapture, setFailedCapture] = useState<CaptureInfo | null>(null);
+  const [copying, setCopying] = useState(false);
   const engineState = useEngineState();
   const hasResults = useRef(false);
   const runId = useRef(0);
@@ -298,6 +300,32 @@ export function DecoderApp() {
             .join(" · ")
         : "";
 
+  const reportMeta = { title: source.title, chip: source.chip, meta: meta.replace(/ · decoded on this computer$/, "") };
+
+  /** The page on screen, as HTML with its colours and cards, for Outlook / Teams. */
+  async function copyPage(which: Tab) {
+    if (!report) return;
+    setCopying(true);
+    try {
+      const html = await emailHtml(report, which as ReportTab, selected, reportMeta);
+      const ok = await copyHtml(html, reportToMarkdown(report));
+      if (ok) toast.success(`Copied the ${TAB_TITLE[which as ReportTab]} page. Paste it into Outlook, Teams or a ticket.`);
+      else toast.error("The browser did not allow copying. Use HTML report to download it instead.");
+    } catch (e) {
+      toast.error(`Could not copy: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  /** The whole report as one HTML file to share. */
+  function downloadReport() {
+    if (!report) return;
+    const base = source.title.replace(/\.(txt|log|hex|zip|logel)$/i, "").replace(/[^\w.-]+/g, "_").slice(0, 80) || "3gpp";
+    downloadFile(`${base}-3GPP-report.html`, fileHtml(report, reportMeta), "text/html");
+    toast.success("HTML report downloaded. It opens in any browser, no install needed.");
+  }
+
   return (
     <div className="flex min-h-dvh flex-col">
       <AppBar
@@ -308,11 +336,9 @@ export function DecoderApp() {
         tab={tab}
         onTab={pickTab}
         onHome={goHome}
-        onCopy={
-          report
-            ? async () => (await copyText(reportToMarkdown(report))) && toast.success("Report copied. Paste it into a ticket or an email.")
-            : undefined
-        }
+        onCopy={report ? () => copyPage(tab) : undefined}
+        onReport={report ? downloadReport : undefined}
+        copying={copying}
         onJson={report ? () => downloadFile("3gpp-decode.json", JSON.stringify(report, null, 2)) : undefined}
       />
       <main className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-5 px-[clamp(12px,2.4vw,24px)] py-5">
@@ -335,7 +361,9 @@ export function DecoderApp() {
         {failedCapture && !report ? <FilesView capture={failedCapture} /> : null}
         {report && entry ? (
           <>
-            {tab === "summary" && report.session ? <SummaryView report={report} onOpen={openMessage} onTab={pickTab} /> : null}
+            {tab === "summary" && report.session ? (
+              <SummaryView report={report} onOpen={openMessage} onTab={pickTab} onCopy={() => copyPage("summary")} onReport={downloadReport} />
+            ) : null}
             {tab === "files" && report.capture ? <FilesView capture={report.capture} /> : null}
             {tab === "flow" && report.session ? <FlowView session={report.session} selected={selected} onOpen={openMessage} /> : null}
             {tab === "messages" ? (

@@ -53,8 +53,18 @@ The results open on the **Summary** for a session, or on the **Message** for one
 - **Radio**: serving RSRP / RSRQ / SINR from measurement reports.
 - **Context**: PLMN, TAC, cell IDs, IMSI / GUTI / TMSI, APN / DNN, IP address and QoS.
 
-**Home** goes back to the home page (and **Back to the results** returns), **Copy report**
-puts a Markdown RCA summary on the clipboard for tickets, and **JSON** saves the full decode.
+**Home** goes back to the home page (and **Back to the results** returns). Two ways to share:
+
+- **Copy report** copies the page you are on (Summary, Signalling flow, Messages, Radio,
+  Context or Files) with its colours, cards and tables, ready to paste into an Outlook email,
+  Teams or a ticket. It is written for Outlook: inline styles, table layout, solid colours, and
+  charts as images. On the Messages page it copies the message list and the selected message
+  with its full decode. Plain text fallback: a Markdown summary.
+- **HTML report** downloads the whole analysis as one `.html` file: every page and every
+  message with its full decode, charts included. It opens in any browser without this tool,
+  so the team can read it, and it prints or saves as PDF.
+
+**JSON** saves the raw decode.
 The look, colours, header and footer follow Skyworth Log Prism.
 
 ## Logel captures (UNISOC armlog)

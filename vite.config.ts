@@ -8,6 +8,13 @@ import { payloadTags, sealPage } from "./scripts/payload.mjs";
 
 const root = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
+/** Put the data blocks before the page's own closing body tag: the last one, since the app's
+ *  code can contain the same text (the HTML report it writes is a whole page). */
+const withPayload = (html: string) => {
+  const at = html.lastIndexOf("</body>");
+  return `${html.slice(0, at)}${payloadTags()}\n${html.slice(at)}`;
+};
+
 /**
  * Produces the single, offline index.html at the repository root:
  *  - in `vite dev`, the decoder data blocks are injected into the served page;
@@ -20,12 +27,12 @@ function skyworthSingleFile(): Plugin {
     transformIndexHtml: {
       order: "post",
       handler(html, ctx) {
-        return ctx.server ? html.replace("</body>", `${payloadTags()}\n</body>`) : html;
+        return ctx.server ? withPayload(html) : html;
       },
     },
     closeBundle() {
       const built = readFileSync(root("dist/index.html"), "utf8");
-      const page = sealPage(built.replace("</body>", `${payloadTags()}\n</body>`));
+      const page = sealPage(withPayload(built));
       writeFileSync(root("index.html"), page);
       console.log(`index.html written: ${(Buffer.byteLength(page) / 1048576).toFixed(1)} MB, single file, offline`);
     },

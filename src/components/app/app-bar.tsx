@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "motion/react";
-import { CopyIcon, DownloadSimpleIcon, HouseIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon, CopyIcon, DownloadSimpleIcon, FileHtmlIcon, HouseIcon } from "@phosphor-icons/react";
 import { BrandLockup, DecoderMark } from "./brand";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +26,9 @@ export function AppBar<T extends string>({
   onTab,
   onHome,
   onCopy,
+  onReport,
   onJson,
+  copying = false,
 }: {
   title: string;
   chip?: string;
@@ -36,7 +38,9 @@ export function AppBar<T extends string>({
   onTab: (t: T) => void;
   onHome: () => void;
   onCopy?: () => void;
+  onReport?: () => void;
   onJson?: () => void;
+  copying?: boolean;
 }) {
   const reduce = useReducedMotion();
   return (
@@ -72,19 +76,34 @@ export function AppBar<T extends string>({
             <span className="hidden sm:inline">Home</span>
           </button>
           {onJson ? (
-            <button onClick={onJson} className={cn(GHOST, "hidden md:inline-flex")} title="Save the full decode as JSON">
+            <button onClick={onJson} className={cn(GHOST, "hidden md:inline-flex")} aria-label="Save the full decode as JSON">
               <DownloadSimpleIcon weight="bold" className="size-[18px]" />
-              JSON
+              <span className="hidden xl:inline">JSON</span>
             </button>
           ) : null}
           {onCopy ? (
             <button
               onClick={onCopy}
-              className="btn-primary press inline-flex h-[38px] items-center gap-2 whitespace-nowrap rounded-[11px] px-3 text-[13.5px] font-semibold sm:px-[15px]"
-              title="Copy the report as Markdown, for a ticket or an email"
+              disabled={copying}
+              className={cn(GHOST, "disabled:cursor-progress disabled:opacity-70")}
+              title="Copy this page with its colours and cards, to paste into Outlook, Teams or a ticket"
             >
-              <CopyIcon weight="bold" className="size-[18px]" />
+              {copying ? (
+                <CircleNotchIcon weight="bold" className="size-[18px] animate-spin motion-reduce:animate-none" />
+              ) : (
+                <CopyIcon weight="bold" className="size-[18px]" />
+              )}
               <span className="hidden sm:inline">Copy report</span>
+            </button>
+          ) : null}
+          {onReport ? (
+            <button
+              onClick={onReport}
+              className="btn-primary press inline-flex h-[38px] items-center gap-2 whitespace-nowrap rounded-[11px] px-3 text-[13.5px] font-semibold sm:px-[15px]"
+              title="Download the whole report as one HTML file to share with the team"
+            >
+              <FileHtmlIcon weight="bold" className="size-[18px]" />
+              <span className="hidden sm:inline">HTML report</span>
             </button>
           ) : null}
         </div>

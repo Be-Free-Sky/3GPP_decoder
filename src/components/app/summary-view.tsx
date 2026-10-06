@@ -7,6 +7,7 @@ import {
   CheckIcon,
   ClockIcon,
   CopyIcon,
+  FileHtmlIcon,
   FileTextIcon,
   FlowArrowIcon,
   GlobeHemisphereEastIcon,
@@ -18,11 +19,9 @@ import {
   XCircleIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import { toast } from "sonner";
 import type { Procedure, Report, Severity } from "@/lib/engine/types";
 import { buildAreas, buildHeadline, type Area, type AreaStatus } from "@/lib/areas";
-import { copyText, fmtMs } from "@/lib/format";
-import { reportToMarkdown } from "@/lib/report-md";
+import { fmtMs } from "@/lib/format";
 import { FindingCard } from "./finding-card";
 import { FilesSummary } from "./files-view";
 import { cn } from "@/lib/utils";
@@ -157,8 +156,12 @@ export function SummaryView({
   report,
   onOpen,
   onTab,
+  onCopy,
+  onReport,
 }: {
   report: Report;
+  onCopy: () => void;
+  onReport: () => void;
   onOpen: (i: number) => void;
   onTab: (t: "flow" | "radio" | "messages" | "files") => void;
 }) {
@@ -238,11 +241,14 @@ export function SummaryView({
         </div>
         <div className="no-print mt-[18px] flex flex-wrap gap-2">
           <button
-            onClick={async () => (await copyText(reportToMarkdown(report))) && toast.success("Copied. Paste it into a message, an email or a ticket.")}
+            onClick={onCopy}
             className="btn-primary press inline-flex h-[38px] items-center gap-2 rounded-[11px] px-4 text-[13.5px] font-semibold"
           >
             <CopyIcon weight="bold" className="size-[18px]" /> Copy the summary
           </button>
+          <GhostButton icon={FileHtmlIcon} onClick={onReport}>
+            HTML report
+          </GhostButton>
           <GhostButton icon={FileTextIcon} onClick={() => window.print()}>
             Print or save as PDF
           </GhostButton>

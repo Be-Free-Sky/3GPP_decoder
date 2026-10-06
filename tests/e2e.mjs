@@ -60,7 +60,15 @@ if (!exe) {
 }
 
 const browser = await chromium.launch({ executablePath: exe, headless: true });
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
+// keep what Copy report puts on the clipboard (headless browsers have no clipboard to read back)
+await page.addInitScript(() => {
+  window.__copied = [];
+  const write = async (items) => {
+    for (const it of items) window.__copied.push(await (await it.getType("text/html")).text());
+  };
+  Object.defineProperty(navigator, "clipboard", { value: { write, writeText: async () => {} }, configurable: true });
+});
 const network = [];
 const errors = [];
 page.on("request", (r) => {
@@ -94,6 +102,15 @@ try {
   await page.getByText("Decoder ready").first().waitFor({ timeout: 120000 });
   check(true, `engine ready from file:// in ${Date.now() - t0} ms`);
   check((await page.locator("#hex-input").inputValue()) === "", "the home page hex box starts empty");
+
+  // the title and feature cards on the left stay put whichever tab the card on the right shows
+  const leftAt = [];
+  for (const t of [/Upload log/, /Examples/, /Paste hex/]) {
+    await page.getByRole("tab", { name: t }).click();
+    await page.waitForTimeout(400);
+    leftAt.push(JSON.stringify([(await page.locator("main h1").boundingBox()).y, (await page.locator('section[aria-label="Features"]').boundingBox()).y]));
+  }
+  check(new Set(leftAt).size === 1, `the left column does not move between tabs (${leftAt.join(" ")})`);
 
   for (const [title, verdict] of SESSIONS) {
     if (!(await onHome())) await page.getByRole("button", { name: "Home", exact: true }).click();
@@ -141,6 +158,30 @@ try {
   check((await page.getByRole("heading", { name: /Serving cell, from the modem/ }).count()) === 1, "the modem's own radio samples are charted");
   await page.getByRole("tab", { name: /^Messages/ }).click();
   check((await page.getByText("Channel logged by the modem").count()) > 0, "messages use the channel the modem logged");
+
+  // Copy report: the page on screen as HTML with its colours and cards, charts as images
+  const copied = async (tab, n) => {
+    await page.getByRole("tab", { name: tab }).click();
+    await page.getByRole("button", { name: /Copy report/ }).click();
+    await page.waitForFunction((k) => window.__copied.length >= k, n, { timeout: 30000 });
+    return page.evaluate((k) => window.__copied[k - 1], n);
+  };
+  const sumHtml = await copied(/^Summary/, 1);
+  check(/#62/.test(sumHtml) && /border-top:4px solid/.test(sumHtml) && /Files in this log/.test(sumHtml), "Copy report copies the Summary page with its cards");
+  const radioHtml = await copied(/^Radio/, 2);
+  check((radioHtml.match(/data:image\/png/g) || []).length >= 2, "Copy report turns the radio charts into images for Outlook");
+  const flowHtml = await copied(/^Signalling flow/, 3);
+  check(/RRC Setup Request/.test(flowHtml) && /&#9654;|&#9664;/.test(flowHtml), "Copy report copies the signalling ladder");
+
+  // HTML report: one file with every page and every message
+  const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: /HTML report/ }).first().click()]);
+  const reportFile = join(ROOT, "build", "fixtures", "report.html");
+  await dl.saveAs(reportFile);
+  const report = readFileSync(reportFile, "utf8");
+  check(
+    /<details id="msg-1"/.test(report) && ["Summary", "Signalling flow", "Messages (", "Radio", "Context", "Files"].every((x) => report.includes(`>${x}`)),
+    `the HTML report has every page and message (${Math.round(report.length / 1024)} KB)`,
+  );
 
   // an interface message: the S1AP / NGAP block is unpacked on first use
   await page.getByRole("button", { name: "Home", exact: true }).click();
