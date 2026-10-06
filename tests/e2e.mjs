@@ -168,20 +168,38 @@ try {
   };
   const sumHtml = await copied(/^Summary/, 1);
   check(/#62/.test(sumHtml) && /border-top:4px solid/.test(sumHtml) && /Files in this log/.test(sumHtml), "Copy report copies the Summary page with its cards");
+  check(!/SKYWORTH|Copyright|3GPP Decoder/.test(sumHtml), "Copy report leaves out the header and the footer");
   const radioHtml = await copied(/^Radio/, 2);
   check((radioHtml.match(/data:image\/png/g) || []).length >= 2, "Copy report turns the radio charts into images for Outlook");
   const flowHtml = await copied(/^Signalling flow/, 3);
   check(/RRC Setup Request/.test(flowHtml) && /&#9654;|&#9664;/.test(flowHtml), "Copy report copies the signalling ladder");
 
-  // HTML report: one file with every page and every message
+  // HTML report: the app itself on this analysis, without the list of files
   const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: /HTML report/ }).first().click()]);
   const reportFile = join(ROOT, "build", "fixtures", "report.html");
   await dl.saveAs(reportFile);
-  const report = readFileSync(reportFile, "utf8");
+  const reportText = readFileSync(reportFile, "utf8");
+  check(!/data-asset=/.test(reportText) && !/msgview\.dat/.test(reportText), `the HTML report carries no decoder engine and no file list (${(reportText.length / 1048576).toFixed(1)} MB)`);
+  const viewer = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const viewerNet = [];
+  const viewerErr = [];
+  viewer.on("request", (r) => !/^(file|blob|data):/.test(r.url()) && viewerNet.push(r.url()));
+  viewer.on("pageerror", (e) => viewerErr.push(e.message));
+  viewer.on("console", (m) => m.type() === "error" && viewerErr.push(m.text()));
+  await viewer.goto(pathToFileURL(reportFile).href);
+  const opened = await viewer.locator("[data-verdict] h2").first().innerText({ timeout: 20000 }).catch(() => "");
+  check(/#62/.test(opened), `the HTML report opens on the same summary ("${opened}")`);
+  const viewerTabs = (await viewer.getByRole("tab").allInnerTexts()).map((t) => t.replace(/\s*\d+$/, "").trim());
   check(
-    /<details id="msg-1"/.test(report) && ["Summary", "Signalling flow", "Messages (", "Radio", "Context", "Files"].every((x) => report.includes(`>${x}`)),
-    `the HTML report has every page and message (${Math.round(report.length / 1024)} KB)`,
+    ["Summary", "Signalling flow", "Messages", "Radio", "Context"].every((t) => viewerTabs.includes(t)) && !viewerTabs.includes("Files"),
+    `the HTML report has the app's pages without Files (${viewerTabs.join(", ")})`,
   );
+  check((await viewer.getByRole("button", { name: "Home", exact: true }).count()) === 0, "the HTML report has no Home button");
+  await viewer.getByRole("tab", { name: /^Messages/ }).click();
+  await viewer.locator('[role="option"]').nth(2).click();
+  check((await viewer.getByText("Message 3 of").count()) === 1, "messages open in the HTML report as in the app");
+  check(viewerNet.length === 0 && viewerErr.length === 0, `the HTML report runs offline without errors${viewerErr.length ? ": " + viewerErr[0] : ""}`);
+  await viewer.close();
 
   // an interface message: the S1AP / NGAP block is unpacked on first use
   await page.getByRole("button", { name: "Home", exact: true }).click();

@@ -16,7 +16,7 @@ import type { CaptureInfo, Report, SplitMode } from "@/lib/engine/types";
 import { prepareCapture, type CaptureSource } from "@/lib/capture";
 import { downloadFile, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
 import { reportToMarkdown } from "@/lib/report-md";
-import { TAB_TITLE, copyHtml, emailHtml, fileHtml, type ReportTab } from "@/lib/report-html";
+import { TAB_TITLE, copyHtml, embeddedReport, emailHtml, fileHtml, viewerHtml, withoutFiles, type ReportTab } from "@/lib/report-html";
 import { AppBar, type TabDef } from "./app-bar";
 import { Landing } from "./landing";
 import { MessageList } from "./message-list";
@@ -56,32 +56,40 @@ function ResultSkeleton({ phase }: { phase?: string | null }) {
   );
 }
 
+/** Where a fresh report opens: the summary of a session, or the message itself. */
+const startTab = (rep: Report): Tab => (rep.messages.length > 1 && rep.session ? "summary" : "messages");
+const firstIssue = (rep: Report) => rep.messages.find((m) => worstSeverity(m.result))?.index ?? 0;
+
+/** A shared HTML report: this app opened on a finished analysis, with no decoder and no home page. */
+const SHARED = typeof window === "undefined" ? null : embeddedReport();
+
 export function DecoderApp() {
   // The home page box starts empty every time; examples and files never fill it.
   const [draft, setDraft] = useState("");
   const [protocol, setProtocol] = useState("auto");
   const [split, setSplit] = useState<SplitMode>("auto");
-  const [report, setReport] = useState<Report | null>(null);
-  const [source, setSource] = useState<Source>({ title: "Pasted log" });
+  const [report, setReport] = useState<Report | null>(SHARED?.report ?? null);
+  const [source, setSource] = useState<Source>(SHARED ? { title: SHARED.meta.title, chip: SHARED.meta.chip } : { title: "Pasted log" });
   const [decoding, setDecoding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState(0);
-  const [tab, setTab] = useState<Tab>("summary");
+  const [selected, setSelected] = useState(SHARED ? firstIssue(SHARED.report) : 0);
+  const [tab, setTab] = useState<Tab>(SHARED ? startTab(SHARED.report) : "summary");
   const [issuesOnly, setIssuesOnly] = useState(false);
-  const [view, setView] = useState<View>("home");
+  const [view, setView] = useState<View>(SHARED ? "results" : "home");
   const [phase, setPhase] = useState<string | null>(null);
   const [failedCapture, setFailedCapture] = useState<CaptureInfo | null>(null);
   const [copying, setCopying] = useState(false);
   const engineState = useEngineState();
-  const hasResults = useRef(false);
+  const hasResults = useRef(Boolean(SHARED));
   const runId = useRef(0);
 
   useEffect(() => {
-    engine.boot();
+    if (!SHARED) engine.boot();
   }, []);
 
   // Browser Back from the results returns to the home page.
   useEffect(() => {
+    if (SHARED) return;
     const onPop = () => setView(location.hash === RESULTS_HASH && hasResults.current ? "results" : "home");
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -117,9 +125,8 @@ export function DecoderApp() {
   const finish = useCallback((rep: Report) => {
     setReport(rep);
     hasResults.current = true;
-    const firstIssue = rep.messages.find((m) => worstSeverity(m.result));
-    setSelected(firstIssue?.index ?? 0);
-    setTab(rep.messages.length > 1 && rep.session ? "summary" : "messages");
+    setSelected(firstIssue(rep));
+    setTab(startTab(rep));
     setIssuesOnly(false);
   }, []);
 
@@ -279,7 +286,9 @@ export function DecoderApp() {
 
   const entry = report?.messages[selected];
   const k = report?.session?.kpis;
-  const meta = decoding
+  const meta = SHARED
+    ? SHARED.meta.meta
+    : decoding
     ? phase
       ? `${phase}…`
       : engineState.stage === "ready"
@@ -307,7 +316,7 @@ export function DecoderApp() {
     if (!report) return;
     setCopying(true);
     try {
-      const html = await emailHtml(report, which as ReportTab, selected, reportMeta);
+      const html = await emailHtml(report, which as ReportTab, selected);
       const ok = await copyHtml(html, reportToMarkdown(report));
       if (ok) toast.success(`Copied the ${TAB_TITLE[which as ReportTab]} page. Paste it into Outlook, Teams or a ticket.`);
       else toast.error("The browser did not allow copying. Use HTML report to download it instead.");
@@ -318,12 +327,13 @@ export function DecoderApp() {
     }
   }
 
-  /** The whole report as one HTML file to share. */
+  /** The whole analysis as one HTML file to share: the same pages, without the list of files. */
   function downloadReport() {
     if (!report) return;
+    const shared = withoutFiles(report);
     const base = source.title.replace(/\.(txt|log|hex|zip|logel)$/i, "").replace(/[^\w.-]+/g, "_").slice(0, 80) || "3gpp";
-    downloadFile(`${base}-3GPP-report.html`, fileHtml(report, reportMeta), "text/html");
-    toast.success("HTML report downloaded. It opens in any browser, no install needed.");
+    downloadFile(`${base}-3GPP-report.html`, viewerHtml(shared, reportMeta) ?? fileHtml(shared, reportMeta), "text/html");
+    toast.success("HTML report downloaded. It opens in any browser and looks like this page.");
   }
 
   return (
@@ -335,11 +345,11 @@ export function DecoderApp() {
         tabs={tabs}
         tab={tab}
         onTab={pickTab}
-        onHome={goHome}
+        onHome={SHARED ? undefined : goHome}
         onCopy={report ? () => copyPage(tab) : undefined}
         onReport={report ? downloadReport : undefined}
         copying={copying}
-        onJson={report ? () => downloadFile("3gpp-decode.json", JSON.stringify(report, null, 2)) : undefined}
+        onJson={report && !SHARED ? () => downloadFile("3gpp-decode.json", JSON.stringify(report, null, 2)) : undefined}
       />
       <main className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-5 px-[clamp(12px,2.4vw,24px)] py-5">
         {error ? (

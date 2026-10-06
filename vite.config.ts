@@ -24,6 +24,15 @@ const withPayload = (html: string) => {
 function skyworthSingleFile(): Plugin {
   return {
     name: "skyworth-single-file",
+    // The code is inlined in a <script> element, which the HTML parser ends at the first "</script".
+    // The app writes whole pages (the HTML report), so escape those sequences: "<\/script" and
+    // "<\!--" mean the same inside JavaScript strings, templates and regular expressions.
+    // Runs after minification and before vite-plugin-singlefile (a post plugin) inlines the code.
+    generateBundle(_options, bundle) {
+      for (const file of Object.values(bundle)) {
+        if (file.type === "chunk") file.code = file.code.replace(/<\/script/gi, "<\\/script").replace(/<!--/g, "<\\!--");
+      }
+    },
     transformIndexHtml: {
       order: "post",
       handler(html, ctx) {

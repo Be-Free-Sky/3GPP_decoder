@@ -36,7 +36,8 @@ export function AppBar<T extends string>({
   tabs: TabDef<T>[];
   tab: T;
   onTab: (t: T) => void;
-  onHome: () => void;
+  /** absent in a shared report, which has no home page */
+  onHome?: () => void;
   onCopy?: () => void;
   onReport?: () => void;
   onJson?: () => void;
@@ -47,16 +48,25 @@ export function AppBar<T extends string>({
     <header className="no-print sticky top-0 z-30">
       <div className="glass-bar flex items-center justify-between gap-3.5 border-b border-border px-[clamp(12px,2.4vw,24px)] py-2.5 shadow-[inset_0_-1px_0_rgb(255_255_255/0.6)]">
         <div className="flex min-w-0 items-center gap-3.5">
-          <button
-            onClick={onHome}
-            className="press -m-1 shrink-0 rounded-[10px] p-1 transition-colors duration-150 hover:bg-hover"
-            aria-label="Skyworth 3GPP Decoder, go to the home page"
-          >
-            <span className="hidden lg:block">
-              <BrandLockup size="sm" />
+          {onHome ? (
+            <button
+              onClick={onHome}
+              className="press -m-1 shrink-0 rounded-[10px] p-1 transition-colors duration-150 hover:bg-hover"
+              aria-label="Skyworth 3GPP Decoder, go to the home page"
+            >
+              <span className="hidden lg:block">
+                <BrandLockup size="sm" />
+              </span>
+              <DecoderMark className="size-7 lg:hidden" />
+            </button>
+          ) : (
+            <span className="-m-1 shrink-0 p-1" aria-label="Skyworth 3GPP Decoder">
+              <span className="hidden lg:block">
+                <BrandLockup size="sm" />
+              </span>
+              <DecoderMark className="size-7 lg:hidden" />
             </span>
-            <DecoderMark className="size-7 lg:hidden" />
-          </button>
+          )}
           <span aria-hidden className="hidden h-8 w-px bg-line-2 lg:block" />
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2.5">
@@ -71,10 +81,12 @@ export function AppBar<T extends string>({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button onClick={onHome} className={GHOST} aria-label="Home">
-            <HouseIcon weight="bold" className="size-[18px]" />
-            <span className="hidden sm:inline">Home</span>
-          </button>
+          {onHome ? (
+            <button onClick={onHome} className={GHOST} aria-label="Home">
+              <HouseIcon weight="bold" className="size-[18px]" />
+              <span className="hidden sm:inline">Home</span>
+            </button>
+          ) : null}
           {onJson ? (
             <button onClick={onJson} className={cn(GHOST, "hidden md:inline-flex")} aria-label="Save the full decode as JSON">
               <DownloadSimpleIcon weight="bold" className="size-[18px]" />

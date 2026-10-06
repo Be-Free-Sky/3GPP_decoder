@@ -1,11 +1,14 @@
 /**
  * HTML reports that keep the page's look outside the browser.
  *
- *  - emailHtml(): the page the user is on, for the clipboard. Outlook (Word's HTML engine) keeps
- *    colours, borders and tables but drops flexbox, grid, CSS variables, rgba and SVG, so every
- *    style is inline, layout is tables, soft colours are solid hex and charts are PNG images.
- *  - fileHtml(): the whole report as one self-contained .html file to share: every page, every
- *    message with its full decode, charts as inline SVG.
+ *  - emailHtml(): the content of the page the user is on, for the clipboard (no header or
+ *    footer). Outlook (Word's HTML engine) keeps colours, borders and tables but drops flexbox,
+ *    grid, CSS variables, rgba and SVG, so every style is inline, layout is tables, soft colours
+ *    are solid hex and charts are PNG images.
+ *  - viewerHtml(): the report to share as one .html file: the app itself (its code and styles,
+ *    without the decoder engine) opened on this report, so it looks and works the same.
+ *  - fileHtml(): a static fallback of the whole report, for the dev server where the app is
+ *    not a single page that can be copied.
  */
 
 import type { CaptureInfo, ContextItem, DecodeResult, Finding, MessageEntry, ModemSample, Report, Severity, TreeNode } from "@/lib/engine/types";
@@ -695,10 +698,6 @@ export interface ReportMeta {
   meta: string;
 }
 
-function brandEmail() {
-  return `<span style="${FONT}font-size:20px;font-weight:800;letter-spacing:1px;color:${C.blue}">SKYWORTH</span><span style="${FONT}font-size:18px;color:${C.line2}">&nbsp;|&nbsp;</span><span style="${FONT}font-size:17px;font-weight:800;color:${C.ink}">3GPP Decoder</span>`;
-}
-
 function footer() {
   return `<p style="margin:16px 0 0;${FONT}font-size:12px;line-height:1.6;color:${C.muted}">Written from the log itself by Skyworth 3GPP Decoder, offline on the analyst's computer.<br>Copyright &copy; 2026 Rahul Kumbhar. Skyworth 3GPP Decoder&trade; by Rahul Kumbhar. SKYWORTH, &#21019;&#32500; and the SKYWORTH logo are trademarks of Skyworth Group.</p>`;
 }
@@ -721,7 +720,7 @@ function viewBody(report: Report, tab: ReportTab, selected: number, ctx: Ctx) {
 }
 
 /** The page the user is on, as email-safe HTML. Charts come back as specs to render to PNG. */
-export function emailParts(report: Report, tab: ReportTab, selected: number, meta: ReportMeta) {
+export function emailParts(report: Report, tab: ReportTab, selected: number) {
   const charts: ChartSpec[] = [];
   const ctx: Ctx = {
     file: false,
@@ -731,12 +730,7 @@ export function emailParts(report: Report, tab: ReportTab, selected: number, met
     },
   };
   const body = viewBody(report, tab, selected, ctx);
-  const html = `<div style="background:${C.page};padding:18px;${FONT}color:${C.ink}">${table(
-    `<tr><td style="padding:0 0 14px 0">${brandEmail()}<div style="${FONT}font-size:20px;font-weight:800;color:${C.ink};margin:10px 0 2px">${esc(meta.title)}${
-      meta.chip ? ` ${chip(esc(meta.chip), "brand")}` : ""
-    }</div><div style="${FONT}font-size:12.5px;color:${C.muted}">${esc(meta.meta)}</div><div style="margin-top:8px">${chip(TAB_TITLE[tab], "brand")}</div></td></tr><tr><td>${body}${footer()}</td></tr>`,
-    "max-width:880px;",
-  )}</div>`;
+  const html = `<div style="background:${C.page};padding:14px 14px 0 14px;${FONT}color:${C.ink}">${table(`<tr><td>${body}</td></tr>`, "max-width:880px;")}</div>`;
   return { html, charts };
 }
 
@@ -768,8 +762,8 @@ export async function chartPngs(charts: ChartSpec[], scale = 2): Promise<Record<
   return out;
 }
 
-export async function emailHtml(report: Report, tab: ReportTab, selected: number, meta: ReportMeta) {
-  const { html, charts } = emailParts(report, tab, selected, meta);
+export async function emailHtml(report: Report, tab: ReportTab, selected: number) {
+  const { html, charts } = emailParts(report, tab, selected);
   const png = await chartPngs(charts);
   return html.replace(/%%CHART:([\w-]+)%%/g, (_m, id: string) => {
     const c = charts.find((x) => x.id === id)!;
@@ -836,6 +830,57 @@ ${sections.map(([id, label, body]) => `<section id="${id}"><h2>${esc(label)}</h2
 ${footer()}
 </main>
 </body></html>`;
+}
+
+/** Report data built into an exported page (see viewerHtml). */
+export interface EmbeddedReport {
+  report: Report;
+  meta: ReportMeta;
+  exported: string;
+}
+
+export function embeddedReport(): EmbeddedReport | null {
+  return (window as unknown as { __SKYWORTH_REPORT__?: EmbeddedReport }).__SKYWORTH_REPORT__ ?? null;
+}
+
+/** The report to share: the same analysis without the capture's list of files. */
+export function withoutFiles(report: Report): Report {
+  if (!report.capture?.files) return report;
+  const capture = { ...report.capture };
+  delete capture.files;
+  return { ...report, capture };
+}
+
+/**
+ * The report as one .html file that looks and works like the app: this page's own code and
+ * styles (about 1 MB, without the decoder engine) opened straight on this report. Null on the
+ * dev server, where the app is loaded from many files rather than one page.
+ */
+export function viewerHtml(report: Report, meta: ReportMeta): string | null {
+  const code = document.querySelector<HTMLScriptElement>('script[type="module"]')?.textContent ?? "";
+  if (code.length < 10000) return null;
+  const css = Array.from(document.querySelectorAll("style"))
+    .map((el) => el.textContent ?? "")
+    .join("\n");
+  const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.outerHTML ?? "";
+  // "<" as \u003c keeps the data from ending its <script> element early
+  const data = JSON.stringify({ report, meta, exported: new Date().toISOString() } satisfies EmbeddedReport).replace(/</g, "\\u003c");
+  return [
+    "<!doctype html>",
+    '<html lang="en" class="h-full antialiased">',
+    "<head>",
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<meta name="color-scheme" content="light">',
+    `<title>${esc(meta.title)} - Skyworth 3GPP Decoder report</title>`,
+    icon,
+    `<style>${css}</style>`,
+    `<script>window.__SKYWORTH_REPORT__ = ${data};</script>`,
+    `<script type="module">${code}</script>`,
+    "</head>",
+    '<body class="min-h-dvh"><div id="root"></div></body>',
+    "</html>",
+  ].join("\n");
 }
 
 /** Put HTML (and a text fallback) on the clipboard so it pastes with its formatting. */

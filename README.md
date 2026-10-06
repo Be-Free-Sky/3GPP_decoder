@@ -55,14 +55,17 @@ The results open on the **Summary** for a session, or on the **Message** for one
 
 **Home** goes back to the home page (and **Back to the results** returns). Two ways to share:
 
-- **Copy report** copies the page you are on (Summary, Signalling flow, Messages, Radio,
-  Context or Files) with its colours, cards and tables, ready to paste into an Outlook email,
-  Teams or a ticket. It is written for Outlook: inline styles, table layout, solid colours, and
-  charts as images. On the Messages page it copies the message list and the selected message
-  with its full decode. Plain text fallback: a Markdown summary.
-- **HTML report** downloads the whole analysis as one `.html` file: every page and every
-  message with its full decode, charts included. It opens in any browser without this tool,
-  so the team can read it, and it prints or saves as PDF.
+- **Copy report** copies the content of the page you are on (Summary, Signalling flow,
+  Messages, Radio, Context or Files), without the page header or footer, with its colours,
+  cards and tables, ready to paste into an Outlook email, Teams or a ticket. It is written for
+  Outlook: inline styles, table layout, solid colours, and charts as images. On the Messages
+  page it copies the message list and the selected message with its full decode. Plain text
+  fallback: a Markdown summary.
+- **HTML report** downloads the analysis as one `.html` file (about 1.5 MB) that looks and
+  works exactly like this page: the same header, tabs, cards, message list, decode trees and
+  charts. It is the app itself without the decoder engine, opened on this analysis, so it
+  needs no install and makes no network requests. The **Files** page (the capture's file
+  list) is left out of it.
 
 **JSON** saves the raw decode.
 The look, colours, header and footer follow Skyworth Log Prism.
