@@ -6,7 +6,7 @@
     "engine": "node scripts/build-engine.mjs",
     "dev": "node scripts/build-engine.mjs --if-missing && next dev",
     "build": "node scripts/build-engine.mjs --if-missing && next build",
-    "preview": "python -m http.server 4173 --bind 127.0.0.1 --directory out",
+    "preview": "node scripts/preview.mjs",
     "test:engine": "node scripts/run-python.mjs -m unittest discover -s decoder/tests",
     "lint": "eslint"
   },

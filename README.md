@@ -45,7 +45,12 @@ npm install
 npm run dev            # builds the decoder bundles if needed, then starts Next.js
 ```
 
-`npm run build` produces the static site in `out/` (`out/index.html` plus assets). `npm run preview` serves `out/` on http://127.0.0.1:4173.
+`npm run build` produces the static site in `out/` (`out/index.html` plus assets).
+
+Opening `out/index.html` directly from disk does not work: the page uses absolute asset paths, and browsers block the decoder's Web Worker on `file://` pages. Serve it instead:
+
+- Windows: double-click `open-decoder.cmd` (builds if needed, then opens the site in your browser).
+- Any OS: `npm run preview`, which serves `out/` on http://127.0.0.1:4173 and opens it.
 
 Python is only needed to build the site. Visitors need nothing but a browser.
 
