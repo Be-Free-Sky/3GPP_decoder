@@ -4,6 +4,7 @@ import { CellTowerIcon, ChartLineIcon, TableIcon } from "@phosphor-icons/react";
 import { MsgRef } from "./bits";
 import { CardHead } from "./summary-view";
 import { cn } from "@/lib/utils";
+import { fmtMs } from "@/lib/format";
 
 type Metric = "rsrp" | "rsrq" | "sinr";
 
@@ -260,6 +261,8 @@ function ModemChart({ metric, points }: { metric: Metric; points: ModemSample[] 
     setHover(best);
   };
   const dense = data.length > 60;
+  // stretches with nothing logged for 30 s or more: shaded, so the axis does not hide them
+  const holes = data.slice(1).flatMap((d, k) => (d.t - data[k].t >= 30000 ? [{ a: data[k].t, b: d.t }] : []));
   return (
     <figure className="surface rounded-2xl px-[18px] py-4">
       <figcaption className="flex flex-wrap items-baseline justify-between gap-2">
@@ -289,6 +292,14 @@ function ModemChart({ metric, points }: { metric: Metric; points: ModemSample[] 
           }}
           onBlur={() => setHover(null)}
         >
+          {holes.map((h) => (
+            <g key={h.a} data-gap>
+              <rect x={x(h.a)} y={pad.t} width={Math.max(2, x(h.b) - x(h.a))} height={ih} fill="rgb(11 27 52 / 0.045)" />
+              <text x={(x(h.a) + x(h.b)) / 2} y={pad.t + 12} textAnchor="middle" className="fill-muted-foreground text-[10.5px]">
+                no log, {fmtMs(h.b - h.a)}
+              </text>
+            </g>
+          ))}
           {ticks.map((t) => (
             <g key={t}>
               <line x1={pad.l} x2={width - pad.r} y1={y(t)} y2={y(t)} stroke="var(--hairline)" strokeWidth={1} />

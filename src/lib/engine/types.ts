@@ -146,6 +146,8 @@ export interface Procedure {
   steps: number[];
   layer: string;
   durationMs?: number;
+  /** no answer because the log has a gap from this time, right after the request */
+  gapAfter?: string;
 }
 
 export interface RadioPoint {
@@ -225,6 +227,10 @@ export interface CaptureInfo {
   };
   span?: { date: string | null; start: string | null; end: string | null };
   notes?: string[];
+  /** stretches of the log with nothing logged */
+  gaps?: { from: string; to: string; seconds: number }[];
+  /** where the times come from: Logel's own clock, the modem's sync packet, or the tool's anchor */
+  clock?: { from: "logel" | "sync" | "anchor" | "start"; tick: number; at: string };
   /** asserts and crashes: records, dumps and every matching line in any file */
   crashes?: CrashInfo;
 }
@@ -360,7 +366,8 @@ export interface Session {
     durationMs: number | null;
   };
   narrative: {
-    steps: { i: number; severity: Severity; text: string }[];
+    /** ts: the step's own time when it is not its message's (an assert, a gap) */
+    steps: { i: number; ts?: string | null; severity: Severity; text: string }[];
     root: { title: string; detail?: string; refs: number[]; checks: string[]; causes: string[] } | null;
   };
   verdict: Status;

@@ -5,7 +5,7 @@
  */
 
 import { isZip, listZip, readZipEntry, zipEntryStream } from "./zip";
-import { fmtClock, isLogel, parseLogel, type LogelResult, type RadioSample } from "./logel";
+import { fmtClock, isLogel, parseLogel, type ClockHint, type LogelResult, type RadioSample } from "./logel";
 import { pcapCount, summarizePcap, type IpSummary } from "./pcap";
 import { CRASH_FILE, assertTitle, dumpKind, fileText, looksLikeAssert, parseAssert, parseCoreAssert, printableStrings, scanText, type CrashLine } from "./crash";
 import type { AssertRecord, CoreAssert, CrashGroup, CrashInfo } from "@/lib/engine/types";
@@ -51,6 +51,10 @@ export interface Capture {
   span?: { date: string | null; start: string | null; end: string | null };
   notes: string[];
   crashes: CrashInfo;
+  /** stretches with nothing logged */
+  gaps?: { from: string; to: string; seconds: number }[];
+  /** where the times come from */
+  clock?: LogelResult["clock"];
 }
 
 export interface Prepared {
@@ -490,6 +494,8 @@ function groupLines(lines: CrashLine[]): CrashGroup[] {
   return [...by.values()].sort((a, b) => Number(b.strong) - Number(a.strong) || (a.first ?? "~").localeCompare(b.first ?? "~") || b.count - a.count).slice(0, 400);
 }
 
+const fmtDuration = (s: number) => (s >= 120 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${Math.round(s)} s`);
+
 const msOf = (ts?: string | null) => {
   const m = /(\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d{1,3}))?$/.exec(ts ?? "");
   return m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + Number((m[4] ?? "0").padEnd(3, "0")) : null;
@@ -531,6 +537,26 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
   const sentences = (...xs: (string | null | undefined | false)[]) => xs.filter(Boolean).join(" ");
 
   // the .logel first: its clock dates every other file; then small files before large ones
+  // Logel stores the clock it shows (a PC time and the modem tick at that time) at the head of
+  // its view files: read it first, so every time here is the time Logel shows
+  const hints: ClockHint[] = [];
+  for (const f of src.files.filter((x) => /^(traceview|msgview|msgflowview|phytraceview)\.pbs$/i.test(x.name) && x.size >= 40)) {
+    try {
+      const h = new Uint8Array(await new Response((await f.stream()).pipeThrough(firstBytes(40))).arrayBuffer());
+      if (h.length < 40 || !/^(TIND|MSG |MSGF)$/.test(String.fromCharCode(...h.subarray(0, 4)))) continue;
+      const dv = new DataView(h.buffer);
+      const pc = dv.getUint32(16, true) + dv.getUint32(20, true) * 2 ** 32;
+      if (pc > 946684800000 && pc < 4102444800000) {
+        hints.push({ pc, tick: dv.getUint32(24, true) });
+        break;
+      }
+    } catch {
+      /* no hint from this file */
+    }
+  }
+  let gaps: Capture["gaps"] = [];
+  let logClock: Capture["clock"];
+
   const order = [...src.files].sort((a, b) => Number(!/\.logel$/i.test(a.name)) - Number(!/\.logel$/i.test(b.name)) || a.size - b.size);
   const traceHits: { f: SourceFile; hits: CrashLine[] }[] = [];
   const dumpFiles: { f: SourceFile; what: string }[] = [];
@@ -552,7 +578,11 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
         }
         onStep(`Finding RRC and NAS messages, asserts and crashes in ${f.name}`);
         await new Promise((r) => setTimeout(r, 0));
-        const res: LogelResult = parseLogel(data, 5000, f.name);
+        const res: LogelResult = parseLogel(data, 5000, f.name, hints);
+        gaps = res.gaps;
+        logClock = res.clock;
+        for (const g of res.gaps)
+          notes.push(`Nothing was logged from ${g.from} to ${g.to} (${fmtDuration(g.seconds)}): what comes before is what the modem kept in its buffer before Logel connected, or the log stopped.`);
         searched.push(f.name);
         records.push(...res.records);
         radio.push(...res.radio);
@@ -563,6 +593,8 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
         Object.entries(res.device).forEach(([k, v]) => (device[k] ??= v));
         if (res.date || res.start) span = { date: res.date, start: res.start, end: res.end };
         if (res.truncated) notes.push(`${f.name} ends part way through a packet: the log may have been cut short.`);
+        if (res.endDate && res.date && res.endDate !== res.date)
+          notes.push(`The log runs past midnight: it starts on ${res.date} and times from 00:00:00 on are on ${res.endDate}.`);
         // what the modem printed at its assert console is an assert record of its own
         let consoleNote: string | null = null;
         if (res.console) {
@@ -589,7 +621,23 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
           res.radio.length ? `${res.radio.length} radio samples` : null,
           `${res.packets} packets in ${res.streams} trace ${res.streams === 1 ? "stream" : "streams"}`,
         ].filter(Boolean);
-        add(f, "analysed", rule.label, rule.holds, sentences(`${bits.join(", ")}.`, res.internal ? `${res.internal} internal modem messages left out.` : null, consoleNote, dumpNote, found(res.crash)));
+        const clockNote = res.clock
+          ? `Times: ${
+              res.clock.from === "logel"
+                ? "the modem's clock as Logel shows it"
+                : res.clock.from === "sync"
+                  ? "the modem's own clock (its sync packet)"
+                  : "Logel's start time (no clock packet in the log, so times may be off by a few seconds)"
+            }, tick ${res.clock.tick.toLocaleString("en")} = ${res.clock.at}.`
+          : null;
+        const gapNote = res.gaps.length ? `${res.gaps.length === 1 ? "A gap" : `${res.gaps.length} gaps`} with nothing logged: ${res.gaps.map((g) => `${g.from} to ${g.to}`).join(", ")}.` : null;
+        add(
+          f,
+          "analysed",
+          rule.label,
+          rule.holds,
+          sentences(`${bits.join(", ")}.`, res.internal ? `${res.internal} internal modem messages left out.` : null, clockNote, gapNote, consoleNote, dumpNote, found(res.crash)),
+        );
         continue;
       }
 
@@ -880,6 +928,8 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
     span,
     notes,
     crashes: { events: unique, groups, searched, lines: crashLines.length },
+    gaps,
+    clock: logClock,
   };
   return { capture, text: texts.length ? texts.join("\n\n") : undefined };
 }

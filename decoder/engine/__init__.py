@@ -133,7 +133,7 @@ def decode_capture(cap):
     crashed = bool(crashes.get("events") or any(g.get("strong") for g in crashes.get("groups") or []))
     # an assert record is worth a report on its own, even with no messages beside it
     report["session"] = session_mod.analyze(items, extra) if items or crashed else None
-    report["capture"] = {k: cap.get(k) for k in ("name", "kind", "files", "device", "ip", "stats", "notes", "span", "crashes")
+    report["capture"] = {k: cap.get(k) for k in ("name", "kind", "files", "device", "ip", "stats", "notes", "span", "crashes", "gaps", "clock")
                          if cap.get(k) is not None}
     if not items:
         report["capture"]["extra"] = extra

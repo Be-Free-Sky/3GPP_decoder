@@ -295,7 +295,7 @@ export function SummaryView({
                     onClick={() => onOpen(st.i)}
                     className="grid w-full grid-cols-[96px_26px_minmax(0,1fr)] items-center gap-2.5 rounded-[10px] px-1.5 py-2 text-left text-[15px] leading-snug transition-[background-color,box-shadow] duration-150 hover:bg-accent hover:shadow-[inset_0_0_0_1px_rgb(0_105_200/0.5)]"
                   >
-                    <span className="font-mono text-[13px] font-semibold text-ink-2">{ts(st.i) ?? `#${st.i + 1}`}</span>
+                    <span className="font-mono text-[13px] font-semibold text-ink-2">{st.ts ?? ts(st.i) ?? `#${st.i + 1}`}</span>
                     <span className={cn("grid size-6 place-items-center rounded-full", S.cls)}>
                       <S.icon weight="bold" className="size-3.5" />
                     </span>
@@ -350,7 +350,13 @@ export function SummaryView({
                   <tr key={i} className="border-t border-border">
                     <td className="px-2 py-2.5 font-semibold text-foreground">{p.name}</td>
                     <td className="px-2 py-2.5">
-                      <span className={cn("rounded-full px-2.5 py-[3px] text-[12.5px] font-bold", PROC_WORD[p.status].cls)}>{PROC_WORD[p.status].label}</span>
+                      {p.status === "no-answer" && p.gapAfter ? (
+                        <span className="rounded-full bg-info-soft px-2.5 py-[3px] text-[12.5px] font-bold text-info-ink" title={`Nothing was logged from ${p.gapAfter}`}>
+                          Log stops before answer
+                        </span>
+                      ) : (
+                        <span className={cn("rounded-full px-2.5 py-[3px] text-[12.5px] font-bold", PROC_WORD[p.status].cls)}>{PROC_WORD[p.status].label}</span>
+                      )}
                     </td>
                     <td className="px-2 py-2.5 font-mono text-[13px] text-ink-2">{p.durationMs != null ? fmtMs(p.durationMs) : "n/a"}</td>
                     <td className="px-2 py-2.5">

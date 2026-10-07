@@ -364,6 +364,7 @@ export function DecoderApp() {
             `${report.messages.length} ${report.messages.length === 1 ? "message" : "messages"}`,
             k?.rats.length ? k.rats.join(" and ") : report.messages.length === 1 && entry?.result.ok ? protocolShort(entry.result) : null,
             k?.durationMs ? `${fmtMs(k.durationMs)} of log` : null,
+            report.capture?.gaps?.length ? `${report.capture.gaps.length === 1 ? "a gap" : `${report.capture.gaps.length} gaps`} with nothing logged` : null,
             k && k.critical ? `${k.critical} ${k.critical === 1 ? "failure" : "failures"}` : null,
             report.capture?.span?.date ? `logged ${report.capture.span.date}` : null,
             SHARED ? null : "decoded on this computer",

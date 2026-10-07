@@ -44,6 +44,8 @@ export async function analyseLog(cap: CaptureSource, onStep: (text: string) => v
     span: c.span,
     notes: c.notes,
     crashes: c.crashes,
+    gaps: c.gaps,
+    clock: c.clock,
   };
   // an assert or crash is reported even when the log holds no messages beside it
   if (c.records.length || crashFound(c.crashes)) {
@@ -105,6 +107,8 @@ export function logFacts(l: FleetLog) {
   const out: string[] = [];
   const span = l.info?.span;
   if (span?.date) out.push(`${span.date}${span.start ? ` ${span.start.slice(0, 8)}` : ""}${span.end ? ` to ${span.end.slice(0, 8)}` : ""}`);
+  const gaps = l.info?.gaps ?? [];
+  if (gaps.length) out.push(`nothing logged ${gaps.map((g) => `${g.from.slice(0, 8)} to ${g.to.slice(0, 8)}`).join(", ")}`);
   if (r) {
     out.push(`${r.messages.length} ${r.messages.length === 1 ? "message" : "messages"}`);
     const k = r.session?.kpis;

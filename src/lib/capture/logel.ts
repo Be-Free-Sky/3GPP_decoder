@@ -45,6 +45,10 @@ export interface LogelResult {
   console?: { text: string; ms: number | null; packets: number };
   /** a modem memory dump sent inside the log after an assert */
   dump?: { bytes: number; packets: number; head: Uint8Array; ms: number | null };
+  /** where the times come from, said in the Files list */
+  clock?: { from: "logel" | "sync" | "anchor" | "start"; tick: number; at: string };
+  /** stretches with nothing logged (the modem's buffer, sent when Logel connects, then the live log) */
+  gaps: { from: string; to: string; seconds: number }[];
   records: LogelRecord[];
   radio: RadioSample[];
   at: { ts: string | null; line: string }[];
@@ -55,6 +59,8 @@ export interface LogelResult {
   start: string | null;
   end: string | null;
   date: string | null;
+  /** the date of the last message, when the log runs past midnight */
+  endDate?: string | null;
   truncated: boolean;
 }
 
@@ -167,13 +173,26 @@ export function isLogel(head: Uint8Array) {
   return L >= 8 && L < 1 << 20 && dv.getUint16(8, true) === L && head[10] === 0xd1;
 }
 
-export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the .logel"): LogelResult {
+/** A time Logel itself stores with its views (traceview.pbs, msgview.pbs ...): PC time of a tick. */
+export interface ClockHint {
+  pc: number;
+  tick: number;
+}
+
+/**
+ * The modem's ticks are ms since it started; when Logel connects it first sends what the modem
+ * kept in its buffer (minutes old), then the live log. So the time of a tick comes, in order of
+ * trust, from: the pair Logel stores with its own views (what Logel shows), the modem's sync
+ * packet (its clock in whole seconds at a tick), the tool's anchor with the latest tick inside the
+ * stream (live, not buffered), and last the anchor before the stream's first packet.
+ */
+export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the .logel", hints: ClockHint[] = []): LogelResult {
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const streams = new Map<number, Stream>();
   const anchors = new Map<number, number>(); // stream -> base ms (time = base + tick)
   let pending: number | null = null;
-  let lastSub: number | null = null;
-  let sync: { sub: number; base: number } | null = null;
+  const syncs: { unix: number; tick: number }[] = [];
+  const anchorList: { pc: number; tick: number }[] = [];
   let device = "";
   let off = 0;
   let packets = 0;
@@ -209,26 +228,53 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
         anchors.set(sub, pending);
         pending = null;
       }
-      lastSub = sub;
     } else if (type === 0xd1 && sub >= 0x80 && sub <= 0x8f && L >= 20) {
       const pc = dv.getUint32(off + 12, true) + dv.getUint32(off + 16, true) * 2 ** 32;
-      pending = pc - dv.getUint32(off + 20, true);
-    } else if (type === 0x05 && sub === 0x11 && L >= 24 && lastSub !== null) {
-      sync = { sub: lastSub, base: dv.getUint32(off + 16, true) * 1000 - dv.getUint32(off + 24, true) };
+      const tick = dv.getUint32(off + 20, true);
+      pending = pc - tick;
+      anchorList.push({ pc, tick });
+    } else if (type === 0x05 && sub === 0x11 && L >= 24) {
+      syncs.push({ unix: dv.getUint32(off + 16, true) * 1000, tick: dv.getUint32(off + 24, true) });
     } else if (type === 0x00 && sub === 0x00 && L > 8) {
       device += new TextDecoder("latin1").decode(data.subarray(off + 12, off + 4 + L));
     }
     off += 4 + L;
   }
-  const res = extract(data, streams, anchors, sync, device, packets, truncated, maxRecords);
+  // the clock of each stream: a known (PC time, tick) pair whose tick lies inside the stream
+  const range = new Map<number, [number, number]>();
+  for (const st of streams.values()) range.set(st.sub, [Math.min(...st.ticks), Math.max(...st.ticks)]);
+  // a tick belongs to a stream's clock when it lies among the stream's own ticks: the modem's
+  // clock pairs (Logel's, the sync packet) within ten minutes of them, a tool anchor within 1 s
+  const inside = (sub: number, tick: number, slack = 1000) => {
+    const r = range.get(sub);
+    return Boolean(r && tick >= r[0] - slack && tick <= r[1] + slack);
+  };
+  const clocks = new Map<number, NonNullable<LogelResult["clock"]> & { base: number }>();
+  for (const sub of range.keys()) {
+    const hint = hints[0] && inside(sub, hints[0].tick, 600000) ? hints[0] : null;
+    const sy = syncs.find((x) => inside(sub, x.tick, 600000));
+    const an = anchorList.filter((a) => inside(sub, a.tick)).sort((a, b) => b.tick - a.tick)[0];
+    const c = hint
+      ? { from: "logel" as const, base: hint.pc - hint.tick, tick: hint.tick, ms: hint.pc }
+      : sy
+        ? { from: "sync" as const, base: sy.unix - sy.tick, tick: sy.tick, ms: sy.unix }
+        : an
+          ? { from: "anchor" as const, base: an.pc - an.tick, tick: an.tick, ms: an.pc }
+          : anchors.has(sub)
+            ? { from: "start" as const, base: anchors.get(sub)!, tick: range.get(sub)![0], ms: anchors.get(sub)! + range.get(sub)![0] }
+            : null;
+    if (c) clocks.set(sub, { from: c.from, base: c.base, tick: c.tick, at: `${fmtDate(c.ms)} ${fmtClock(c.ms)}` });
+  }
+  const res = extract(data, streams, (sub) => clocks.get(sub)?.base ?? null, device, packets, truncated, maxRecords);
 
-  // One clock for every packet. The protocol stack stream is dated by its start anchor (or the
-  // sync packet); the PHY streams' ticks can run on other clocks or pause, so every other packet
-  // takes the time of the protocol stack packet just before it in the file (packets are written
-  // in the order they arrive), or its own tick when its stream keeps time with it.
-  const baseOf = (sub: number) => (sync && sync.sub === sub ? sync.base : anchors.get(sub) ?? null);
-  const psSub = res.psSub ?? [...streams.values()].filter((x) => baseOf(x.sub) !== null).sort((a, b) => b.parts.length - a.parts.length)[0]?.sub;
-  const psBase = psSub != null ? baseOf(psSub) : null;
+  // One clock for every packet. The protocol stack stream is dated as above; the PHY streams'
+  // ticks can run on other clocks or pause, so every other packet takes the time of the protocol
+  // stack packet just before it in the file (packets are written in the order they arrive), or its
+  // own tick when its stream keeps time with the protocol stack.
+  const psSub = res.psSub ?? [...streams.values()].filter((x) => clocks.has(x.sub)).sort((a, b) => b.parts.length - a.parts.length)[0]?.sub;
+  const psClock = psSub != null ? clocks.get(psSub) : undefined;
+  const psBase = psClock?.base ?? null;
+  if (psClock) res.clock = { from: psClock.from, tick: psClock.tick, at: psClock.at };
   const n = pOff.length;
   const ms = new Float64Array(n).fill(NaN);
   const clocked = new Set<number>(); // streams whose own ticks keep time with the protocol stack
@@ -267,6 +313,15 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
     }
     return lo;
   };
+  // gaps: nothing from any stream that keeps time for 30 s or more
+  const times: number[] = [];
+  for (let i = 0; i < n; i++) if (clocked.has(pKind[i]) && !Number.isNaN(ms[i])) times.push(ms[i]);
+  times.sort((a, b) => a - b);
+  res.gaps = [];
+  for (let k = 1; k < times.length; k++) {
+    if (times[k] - times[k - 1] >= 30000) res.gaps.push({ from: fmtClock(times[k - 1]), to: fmtClock(times[k]), seconds: Math.round((times[k] - times[k - 1]) / 100) / 10 });
+  }
+
   // a line's own tick refines its packet's time when its stream keeps time
   res.timeAt = (offset: number, tick?: number) => {
     if (!n) return null;
@@ -277,7 +332,7 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
     return d > 0 && d < 10000 ? v + d : v;
   };
   const phySub = [...streams.values()].filter((x) => x.sub !== psSub).sort((a, b) => b.size - a.size)[0]?.sub;
-  res.base = { ps: psBase, phy: phySub != null ? baseOf(phySub) : null };
+  res.base = { ps: psBase, phy: phySub != null ? (clocks.get(phySub)?.base ?? null) : null };
 
   // the assert console and a memory dump the modem sent after an assert
   const dec = new TextDecoder("latin1");
@@ -333,8 +388,7 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
 function extract(
   data: Uint8Array,
   streams: Map<number, Stream>,
-  anchors: Map<number, number>,
-  sync: { sub: number; base: number } | null,
+  baseOf: (sub: number) => number | null,
   deviceText: string,
   packets: number,
   truncated: boolean,
@@ -361,7 +415,7 @@ function extract(
     s.buf = buf;
     s.starts = starts;
     psSub ??= s.sub;
-    const base = sync && sync.sub === s.sub ? sync.base : anchors.get(s.sub) ?? null;
+    const base = baseOf(s.sub);
     const tickAt = (p: number) => {
       let lo = 0;
       let hi = starts.length - 1;
@@ -492,6 +546,7 @@ function extract(
     crash: [],
     base: { ps: null, phy: null },
     timeAt: () => null,
+    gaps: [],
     psSub,
     records,
     radio: radio.filter((_, i) => i % step === 0).map(withoutTick),
@@ -503,6 +558,7 @@ function extract(
     start: Number.isFinite(minMs) ? fmtClock(minMs) : null,
     end: Number.isFinite(maxMs) ? fmtClock(maxMs) : null,
     date: Number.isFinite(minMs) ? fmtDate(minMs) : null,
+    endDate: Number.isFinite(maxMs) ? fmtDate(maxMs) : null,
     truncated,
   };
 }

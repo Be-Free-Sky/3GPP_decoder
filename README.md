@@ -109,7 +109,19 @@ files are listed as empty, with what they would have held.
 The `.logel` is a sequence of UNISOC diag packets. Only the protocol stack stream is read
 (the PHY stream, often 90 % of the file, needs UNISOC's trace database). Messages appear
 twice in such logs, once as the NAS message and once inside the RRC message that carries it;
-the analysis counts that as one attempt. Times are the capture PC's clock, as in Logel.
+the analysis counts that as one attempt.
+
+**Times** are the times Logel shows. The modem stamps everything with its own tick (ms since it
+started); the page turns ticks into times with the pair Logel stores at the head of its view
+files (`traceview.pbs`, `msgview.pbs`), else the modem's sync packet in the `.logel`, else the
+tool's anchor (said in the Files list, as it can be a few seconds off). Every message time was
+checked against Logel's own message index on real logs (all found at exactly their tick), and
+against the PC times in the `.cap`. When Logel connects, the modem first sends what it kept in
+its buffer, which can be minutes old, then the live log: the stretch between is shown as a
+**gap** (in the timeline, the radio charts, the header and the Files list), and a request whose
+answer would fall in a gap is not called a failure. PHY streams with clocks of their own, the
+assert console and Logel's decoded traces are timed by their place in the `.logel`. A log
+that runs past midnight is noted; times are shown as HH:MM:SS.mmm with the date in the header.
 
 ### Asserts and crashes
 

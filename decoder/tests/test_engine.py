@@ -288,6 +288,22 @@ class Crashes(unittest.TestCase):
         self.assertTrue(any("queue was nearly full" in t for t in titles))
         self.assertTrue(any("byte pool looked damaged" in t for t in titles))
 
+    def test_gap_after_a_request_is_not_a_failure(self):
+        # a registration request, then nothing logged for four minutes
+        nas = SINGLE["5gs-reg-req"]["hex"]
+        recs = [{"ts": "11:20:03.953", "protocol": "nas.5gs", "hex": nas, "header": "5GS NAS"},
+                {"ts": "11:24:09.332", "protocol": "nr-rrc.pcch", "hex": "4000", "header": "NR RRC"}]
+        gaps = [{"from": "11:20:04.233", "to": "11:24:07.318", "seconds": 243.1}]
+        s = engine.decode_capture({"name": "t", "records": recs, "gaps": gaps})["session"]
+        reg = next(f for f in s["findings"] if f.get("category") == "procedure")
+        self.assertEqual(reg["severity"], "info")
+        self.assertIn("log stops before its answer", reg["title"])
+        gap = next(f for f in s["findings"] if f.get("gap"))
+        self.assertIn("4 min 3 s", gap["title"])
+        self.assertEqual(gap["refs"], [1])
+        self.assertTrue(any("Nothing was logged" in st["text"] for st in s["narrative"]["steps"]))
+        self.assertTrue(any("stops before its answer" in st["text"] and st["severity"] == "info" for st in s["narrative"]["steps"]))
+
     def test_nothing_found_is_said(self):
         groups = [{"kind": "assert", "strong": False, "text": "assert check passed", "files": {"a": 1}, "count": 1, "first": None, "last": None}]
         s = engine.decode_capture(capture_of("lte-attach-ok", crashes={"events": [], "groups": groups, "searched": ["a", "b"], "lines": 1}))["session"]

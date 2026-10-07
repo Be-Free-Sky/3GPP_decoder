@@ -587,4 +587,4 @@ def extras_for(cap, n_messages, stamps=None):
             txt = radio.nrarfcn_text(c["arfcn"]) if c.get("arfcn") is not None else None
             ctx["radio"].append({"label": "Serving cell (modem)", "value": f"PCI {c['pci']}" + (f", NR-ARFCN {c['arfcn']}" if c.get("arfcn") is not None else ""),
                                  "hint": txt})
-    return {"findings": findings, "context": ctx, "radio": r}
+    return {"findings": findings, "context": ctx, "radio": r, "gaps": cap.get("gaps") or []}

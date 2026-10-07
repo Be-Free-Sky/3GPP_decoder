@@ -161,6 +161,10 @@ try {
   const used = await page.locator("li", { hasText: ".logel" }).first().innerText();
   const skipped = await page.locator("li", { hasText: "msgview.dat" }).first().innerText();
   check(/Analysed|Modem log/.test(used) && /RRC and NAS/.test(used), "the .logel is listed as analysed");
+  check(
+    /Times: the modem's clock as Logel shows it, tick 503,000 = 2026-01-15 09:14:03\.000/.test(used),
+    "times use the clock Logel stores with its own views (tick 503,000 = 09:14:03.000)",
+  );
   check(/display cache/.test(skipped) && /Searched/.test(skipped), "Logel's view cache is listed with the reason, and searched");
   const tv = await fileRow("traceview.dat").innerText();
   check(/decoded traces/i.test(tv) && /no assert or crash, 1 line mentions one/.test(tv), `Logel's decoded traces are searched line by line ("${tv.split("\n").find((l) => /^Searched/.test(l))}")`);

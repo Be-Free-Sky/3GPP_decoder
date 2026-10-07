@@ -229,6 +229,7 @@ def analyze(items, extra=None):
         own_critical = any(f["severity"] == "critical" for f in findings)
         # AT status only confirms what the messages show; keep it when the messages say nothing
         findings += [dict(f) for f in extra.get("findings") or [] if not (f.get("confirms") and own_critical)]
+        findings += _gap_findings(items, procedures, findings, extra.get("gaps") or [])
     findings = _dedupe(findings)
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 9), f.get("refs", [0])[0] if f.get("refs") else 0))
 
@@ -249,6 +250,44 @@ def analyze(items, extra=None):
     return {"events": [e for e in events if not e.get("nested")], "allEvents": events, "lanes": lanes,
             "procedures": procedures, "findings": findings, "radio": radio, "context": context, "kpis": kpis,
             "narrative": narrative, "verdict": verdict}
+
+
+def _duration(s):
+    return f"{int(s // 60)} min {round(s % 60)} s" if s >= 120 else f"{round(s)} s"
+
+
+def _gap_findings(items, procedures, findings, gaps):
+    """A stretch of the log with nothing in it, and what it means for the procedures before it.
+
+    The modem sends what it kept in its buffer when Logel connects, then the live log; between
+    the two (or wherever logging stopped) nothing is known. A procedure whose request is the last
+    thing before a gap has no answer in the log only because of the gap: say so, not "failed"."""
+    out = []
+    ts_of = {it["index"]: it["record"].get("timestamp") for it in items}
+    for g in gaps:
+        after = next((it["index"] for it in items if (it["record"].get("timestamp") or "") >= g["to"]), None)
+        out.append({"severity": "info", "title": f"Nothing was logged for {_duration(g['seconds'])}",
+                    "detail": f"The log has nothing from {g['from']} to {g['to']}. What comes before it is what the modem "
+                              "kept in its buffer before Logel connected (or the log stopped for a while); what happened "
+                              "in between is not in this log.",
+                    "refs": [after] if after is not None else [], "category": "log", "source": "log", "gap": True,
+                    "at": g["from"], "until": g["to"]})
+        gap_from = _ts_ms(g["from"])
+        for p in procedures:
+            if p["status"] != "no-answer" or gap_from is None:
+                continue
+            last = _ts_ms(ts_of.get(p["steps"][-1]))
+            if last is None or not (0 <= gap_from - last <= 30000):
+                continue
+            p["gapAfter"] = g["from"]
+            for f in findings:
+                if f.get("category") == "procedure" and f.get("refs") and f["refs"][0] == p["start"] and f["severity"] == "warning":
+                    f["severity"] = "info"
+                    f["title"] = f"{p['name']}: the log stops before its answer"
+                    f["detail"] = (f"It started at {p.get('startTs')}, and the log has nothing from {g['from']} to {g['to']}: "
+                                   "its answer may be in that gap. This is not a failure on its own.")
+                    f["checks"] = ["Log again from before the procedure starts, with Logel connected the whole time"]
+    return out
 
 
 def _inner_key(cls):
@@ -551,17 +590,24 @@ def _narrative(items, procs, findings):
                           + (f" in {p['durationMs']} ms" if p.get("durationMs") is not None else "")})
         elif p["status"] == "failure":
             lines.append({"i": p["start"], "severity": "critical", "text": f"{p['name']} failed ({p.get('endTitle')})"})
+        elif p["status"] == "no-answer" and p.get("gapAfter"):
+            lines.append({"i": p["start"], "severity": "info", "text": f"{p['name']} started; the log stops before its answer"})
         elif p["status"] == "no-answer":
             lines.append({"i": p["start"], "severity": "warning", "text": f"{p['name']} started, no answer in the log"})
         elif p["status"] == "retried":
             lines.append({"i": p["start"], "severity": "warning", "text": f"{p['name']} restarted before finishing"})
     for f in findings:
         if f["severity"] == "critical" and not f.get("procedure") and f.get("refs"):
-            lines.append({"i": f["refs"][-1], "severity": "critical", "text": f["title"]})
+            # a crash has its own time; the message it points at is the one before it
+            lines.append({"i": f["refs"][-1], "ts": f.get("at"), "severity": "critical", "text": f["title"]})
         # an assert asked for on purpose is still part of the story
         elif f.get("forced") and f.get("refs"):
-            lines.append({"i": f["refs"][-1], "severity": "warning", "text": f["title"]})
-    lines.sort(key=lambda x: x["i"])
+            lines.append({"i": f["refs"][-1], "ts": f.get("at"), "severity": "warning", "text": f["title"]})
+        # and so is a stretch with nothing logged
+        elif f.get("gap") and f.get("refs"):
+            lines.append({"i": f["refs"][0], "ts": f.get("at"), "severity": "info", "text": f"{f['title']}, until {f.get('until')}"})
+    # in log order: by time where a step has its own, else by its message
+    lines.sort(key=lambda x: (x.get("ts") or (items[x["i"]]["record"].get("timestamp") if x["i"] < len(items) else "") or "", x["i"]))
     root = None
     crit = [f for f in findings if f["severity"] == "critical"]
     if crit:

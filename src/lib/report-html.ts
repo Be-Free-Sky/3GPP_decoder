@@ -293,7 +293,7 @@ function summaryHtml(report: Report) {
     const rows = s.narrative.steps
       .map((st) => {
         const t = TONE[SEV_TONE[st.severity]];
-        return `<tr><td width="96" style="padding:6px 0;${MONO}font-size:12.5px;color:${C.ink2}">${esc(report.messages[st.i]?.timestamp ?? `#${st.i + 1}`)}</td>
+        return `<tr><td width="96" style="padding:6px 0;${MONO}font-size:12.5px;color:${C.ink2}">${esc(st.ts ?? report.messages[st.i]?.timestamp ?? `#${st.i + 1}`)}</td>
           <td width="34" style="padding:6px 0">${tile(SEV_GLYPH[st.severity], 22, t.bg, t.fg, 11)}</td>
           <td style="padding:6px 0;${FONT}font-size:14px;color:${C.ink}">${esc(st.text)}</td></tr>`;
       })
@@ -326,7 +326,7 @@ function summaryHtml(report: Report) {
             ["Procedure", "Result", "Duration", "Messages"],
             s.procedures.map((p) => [
               `<b>${esc(p.name)}</b>`,
-              chip(WORD[p.status][0], WORD[p.status][1]),
+              p.status === "no-answer" && p.gapAfter ? chip("Log stops before answer", "info") : chip(WORD[p.status][0], WORD[p.status][1]),
               mono(p.durationMs != null ? fmtMs(p.durationMs) : "n/a", C.ink2),
               p.steps.slice(0, 6).map(ref).join(" "),
             ]),

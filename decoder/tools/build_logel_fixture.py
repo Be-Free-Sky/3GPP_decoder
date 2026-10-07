@@ -190,12 +190,17 @@ def clock(ms):
     return f"{t // 3_600_000:02d}:{t // 60_000 % 60:02d}:{t // 1000 % 60:02d}.{t % 1000:03d}"
 
 
-def traceview(lines, ps_packets=()):
+def logel_header(magic, pc_ms, tick):
+    """The head Logel writes on its view files: magic, (1, 2, 3), then the PC time of a tick."""
+    return magic + struct.pack("<III", 1, 2, 3) + struct.pack("<QI", pc_ms, tick) + struct.pack("<QI", pc_ms, tick) + bytes(0x200 - 40)
+
+
+def traceview(lines, ps_packets=(), clock=None):
     """Logel's decoded trace view: NUL-ended lines (.dat) and the TIND index (.pbs): a 0x200
     header, then 44 bytes per line: the .logel packet's sequence number at +4, the tick at +12,
     length at +26, offset in the .dat at +28 and the .logel packet's offset at +36."""
     dat = bytearray()
-    pbs = bytearray(b"TIND" + bytes(0x200 - 4))
+    pbs = bytearray(logel_header(b"TIND", *clock) if clock else b"TIND" + bytes(0x200 - 4))
     for k, (tick, text) in enumerate(lines):
         raw = text.encode() + b"\x00"
         row = bytearray(44)
@@ -317,7 +322,7 @@ def armlog_files(name, session=None, pc_start_ms=PC_START_MS, crash=None):
         f"{name}_lte.csv": b"LTE, SIM ID, UE time, EARFCN(Band), PCID, RSRP, SINR\r\n",
         f"{name}_bookmark.xml": b'<?xml version="1.0" ?>\r\n<Bookmark Version="1.0" BugID="">\r\n    <Summary></Summary>\r\n</Bookmark>\r\n',
         f"{name}/msgview.dat": bytes(4096),
-        f"{name}/msgview.pbs": b"MSG " + bytes(1020),
+        f"{name}/msgview.pbs": logel_header(b"MSG ", pc_start_ms + 3000, START_TICK + 3000) + bytes(512),
     }
     if not session:
         return files
@@ -348,7 +353,8 @@ def armlog_files(name, session=None, pc_start_ms=PC_START_MS, crash=None):
         lines += [(tick - 5, "ATC: ATC_RecNewLineSig,link_id:2,sim:0,len:16,line:AT+SPATASSERT=1"), (tick, ps)]
     logel, ps_packets = build_logel(session, pc_start_ms, spec)
     files[f"{name}.logel"] = logel
-    dat, pbs = traceview(sorted(lines), ps_packets)
+    # Logel's clock: the PC time of the tick its sync packet gives (3 s into the log)
+    dat, pbs = traceview(sorted(lines), ps_packets, (pc_start_ms + 3000, START_TICK + 3000))
     files[f"{name}/traceview.dat"] = dat
     files[f"{name}/traceview.pbs"] = pbs
     return files
