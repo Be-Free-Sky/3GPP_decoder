@@ -141,7 +141,6 @@ decoder/tests/       unittest suite
 decoder/engine/capture.py  modem log captures: logged channels, AT answers, modem radio, IP / DNS
 decoder/tools/       build_samples.py: the sample library, spec-encoded and verified;
                      build_logel_fixture.py: a synthetic Logel armlog zip for the e2e test
-decoder/cli.py       decode a file from the terminal with the same engine
 scripts/build-engine.mjs   compiles the engine + the pycrate subset to bytecode inside Pyodide
 scripts/payload.mjs        embeds the runtime and engine in the page, adds the CSP
 src/                 React app (Vite, Tailwind, shadcn/ui on Base UI); src/lib/engine/worker.js
