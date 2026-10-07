@@ -147,7 +147,7 @@ def _parse_at(lines):
 
 
 def _ipv6_compact(addr):
-    """'2409:40c0:006a:014c:8000:...' -> '2409:40c0:6a:14c:8000::' (best effort)."""
+    """'2001:0db8:0000:0000:8000:...' -> '2001:db8::8000:...' (best effort)."""
     parts = addr.split(":")
     if len(parts) != 8:
         return addr
