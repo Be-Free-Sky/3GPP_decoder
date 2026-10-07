@@ -116,11 +116,16 @@ export function logFacts(l: FleetLog) {
   }
   const crashes = l.info?.crashes;
   if (crashFound(crashes)) {
-    const n = crashes!.events.length || crashes!.groups.filter((g) => g.strong).length;
-    out.push(`${n} ${n === 1 ? "assert or crash" : "asserts or crashes"}`);
+    const forced = crashes!.events.filter((e) => e.forced).length;
+    const real = crashes!.events.length - forced || crashes!.groups.filter((g) => g.strong && !g.explained).length;
+    if (real) out.push(`${real} ${real === 1 ? "assert or crash" : "asserts or crashes"}`);
+    if (forced) out.push(`${forced === 1 ? "assert" : `${forced} asserts`} on request (${crashes!.events.find((e) => e.forced)!.forced})`);
   }
   const files = l.info?.files;
-  if (files?.length) out.push(`${files.filter((f) => f.role === "analysed").length} of ${files.length} files used`);
+  if (files?.length) {
+    const empty = files.filter((f) => f.role === "skipped").length;
+    out.push(`${files.length} files read${empty ? ` (${empty} empty)` : ""}`);
+  }
   return out;
 }
 

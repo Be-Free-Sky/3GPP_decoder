@@ -17,6 +17,7 @@ import { engine } from "@/lib/engine/client";
 import { crashFound, searchedCount, type CaptureInfo, type Report, type SplitMode } from "@/lib/engine/types";
 import { splitLogs, type CaptureSource } from "@/lib/capture";
 import { analyseLog, fleetOverview, logVerdict, type FleetLog } from "@/lib/fleet";
+import { crashTone } from "@/lib/crashes";
 import { downloadFile, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
 import { reportToMarkdown } from "@/lib/report-md";
 import {
@@ -288,9 +289,9 @@ export function DecoderApp() {
     };
     // every file of a capture is searched for asserts: the tab says so even when none was found
     const crashes = report.capture?.crashes;
-    const crashN = crashes ? crashes.events.length || crashes.groups.filter((g) => g.strong).length : 0;
+    const crashN = crashes ? crashes.events.length || crashes.groups.filter((g) => g.strong && !g.explained).length : 0;
     const files: TabDef<Tab>[] = [
-      ...(searchedCount(crashes) ? [{ id: "crashes" as Tab, label: "Asserts", icon: BugIcon, n: crashN || undefined, alert: crashN > 0 }] : []),
+      ...(searchedCount(crashes) ? [{ id: "crashes" as Tab, label: "Asserts", icon: BugIcon, n: crashN || undefined, alert: crashTone(crashes) === "bad" }] : []),
       ...(report.capture?.files?.length ? [{ id: "files" as Tab, label: "Files", icon: FilesIcon, n: report.capture.files.length }] : []),
     ];
     if (!report.messages.length) return [...files, ...(report.session ? [{ id: "context" as Tab, label: "Context", icon: IdentificationCardIcon }] : [])];

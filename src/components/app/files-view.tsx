@@ -5,9 +5,9 @@ import { CardHead } from "./summary-view";
 import { cn } from "@/lib/utils";
 
 const ROLE = {
-  analysed: { title: "Analysed", sub: "Decoded and used for the summary.", icon: CheckCircleIcon, chip: "bg-ok-soft text-ok-ink", mark: "text-ok" },
+  analysed: { title: "Analysed", sub: "Read in full: what each file holds, and what was found in it.", icon: CheckCircleIcon, chip: "bg-ok-soft text-ok-ink", mark: "text-ok" },
   info: { title: "Read for information", sub: "Versions and log statistics.", icon: InfoIcon, chip: "bg-info-soft text-info-ink", mark: "text-blue" },
-  skipped: { title: "Not needed", sub: "Left out, with the reason.", icon: MinusCircleIcon, chip: "bg-sunken text-ink-2", mark: "text-muted-foreground" },
+  skipped: { title: "Empty", sub: "Nothing was logged to them (or they could not be opened); listed so you know each was checked.", icon: MinusCircleIcon, chip: "bg-sunken text-ink-2", mark: "text-muted-foreground" },
 } as const;
 
 function FileRow({ f }: { f: CaptureFileInfo }) {
@@ -75,7 +75,7 @@ export function FilesSummary({ capture, onAll }: { capture: CaptureInfo; onAll: 
       <CardHead
         icon={FilesIcon}
         title="Files in this log"
-        sub={`${files.length} ${files.length === 1 ? "file" : "files"}: ${used.length} analysed, ${info.length} read for information, ${files.length - used.length - info.length} not needed.`}
+        sub={`${files.length} ${files.length === 1 ? "file" : "files"}: ${used.length + info.length} analysed, ${files.length - used.length - info.length} empty.`}
         aside={
           <button onClick={onAll} className="text-[13px] font-bold text-link underline underline-offset-[3px] hover:no-underline">
             See every file
@@ -83,10 +83,15 @@ export function FilesSummary({ capture, onAll }: { capture: CaptureInfo; onAll: 
         }
       />
       <ul className="divide-y divide-border rounded-[12px] border border-border bg-panel-2">
-        {used.concat(info).map((f) => (
+        {used.concat(info).slice(0, 8).map((f) => (
           <FileRow key={f.path} f={f} />
         ))}
       </ul>
+      {used.length + info.length > 8 ? (
+        <button onClick={onAll} className="mt-2 text-[13px] font-semibold text-link underline underline-offset-[3px] hover:no-underline">
+          and {used.length + info.length - 8} more analysed {used.length + info.length - 8 === 1 ? "file" : "files"}
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -103,7 +108,7 @@ export function FilesView({ capture }: { capture: CaptureInfo }) {
         <CardHead
           icon={FilesIcon}
           title={`Files in ${capture.name ?? "this log"}`}
-          sub="Each file the capture holds, and whether it was needed. The .logel holds the signalling; the rest is extra detail or tool output."
+          sub="Every file in the log, each read with the reader for its kind and searched line by line for asserts and crashes. A file of a kind this page does not know is still searched and described."
         />
         <div className="flex flex-col gap-4">
           {groups.map(({ r, list }) => {

@@ -45,12 +45,37 @@ export function crashCounts(c: CaptureInfo["crashes"]) {
 export const dumpOnly = (e: { fromDump?: boolean; where?: string; expression?: string; kind: CrashKind }) =>
   Boolean(e.fromDump && !e.where && !e.expression && e.kind === "reset");
 
+/**
+ * How bad it is: a real assert or crash is "bad"; an assert asked for on purpose (AT+SPATASSERT,
+ * to save a memory dump) or only reset / memory lines are "warn"; nothing found is "ok".
+ */
+export function crashTone(c: CaptureInfo["crashes"]): "bad" | "warn" | "ok" {
+  if (!c) return "ok";
+  const open = c.groups.filter((g) => g.strong && !g.explained);
+  if (c.events.some((e) => !e.forced) || open.some((g) => SURE.includes(g.kind))) return "bad";
+  if (c.events.length || open.length) return "warn";
+  return "ok";
+}
+
 /** The statement at the top of the Asserts page. */
 export function crashHeadline(c: CaptureInfo["crashes"]) {
   const n = crashCounts(c);
   const found = crashFound(c);
-  const first = c?.events[0];
-  const line = n.strong[0];
+  const tone = crashTone(c);
+  const first = c?.events.find((e) => !e.forced) ?? c?.events[0];
+  const line = n.strong.find((g) => !g.explained) ?? n.strong[0];
+  if (first?.forced && tone === "warn") {
+    const by = first.forcedBy;
+    return {
+      found,
+      tone,
+      kick: "Assert on request",
+      head: `${first.title}${first.ts ? ` at ${first.ts}` : ""}.`,
+      detail: `The modem did not fail on its own: it was told to assert with ${first.forced}${by?.ts ? `, which reached it at ${by.ts}${by.channel ? ` on AT channel ${by.channel}` : ""}` : ""}. This is how a memory dump is taken on purpose. ${n.searched} files searched line by line; no other assert or crash.`,
+      todo: "Ask who sent it and why: by hand, a test script, or the host because the modem stopped answering. Then look at what happened just before it.",
+      n,
+    };
+  }
   const head = first
     ? `${first.title}${first.ts ? ` at ${first.ts}` : ""}.`
     : line
@@ -66,9 +91,10 @@ export function crashHeadline(c: CaptureInfo["crashes"]) {
   ]
     .filter(Boolean)
     .join(", ");
-  const kick = found ? (n.records > 1 ? `${n.records} modem crashes` : "The modem crashed") : "No assert or crash";
-  const todo = found
-    ? "Send the assert record, the .logel and the modem build to UNISOC: the file and line point them at the cause. Check what the network sent just before it."
-    : undefined;
-  return { found, kick, head, detail: `${detail}.`, todo, n };
+  const kick = tone === "bad" ? (n.records > 1 ? `${n.records} modem crashes` : "The modem crashed") : found ? "Worth a look" : "No assert or crash";
+  const todo =
+    tone === "bad"
+      ? "Send the assert record, the .logel and the modem build to UNISOC: the file and line point them at the cause. Check what the network sent just before it."
+      : undefined;
+  return { found, tone, kick, head, detail: `${detail}.`, todo, n };
 }

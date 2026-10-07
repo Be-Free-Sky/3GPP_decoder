@@ -30,8 +30,10 @@ inside 5GMM transport.
    - **Paste hex**: bare hex, `0x` lists, hexdumps with offsets, or Logel lines such as
      `14:02:17.442  LTE RRC DL_DCCH RRCConnectionReconfiguration` followed by the bytes.
      The box starts empty every time; nothing is saved between visits.
-   - **Upload log**: drop or browse a whole Logel armlog folder, its zip, the `.logel` on its
-     own, or a text export (.txt, .log, .hex). See "Logel captures" below.
+   - **Upload log**: **Choose a folder** (a Logel `_armlog` folder), **Choose files or a zip**,
+     or drop folders, zips, a `.logel` or a text export (.txt, .log, .hex). The system's folder
+     picker takes one folder at a time: once one is chosen, **Add another folder** (or **Add
+     files**) adds more before analysing. See "Logel captures" below.
    - **Examples**: five ready-made sessions, each with a different kind of problem, plus
      single messages to try one at a time.
 3. Leave **Protocol** on Auto-detect and press **Decode** (Ctrl+Enter). The channel named in
@@ -73,8 +75,9 @@ The look, colours, header and footer follow Skyworth Log Prism.
 
 ## Several logs at once
 
-Drop several `_armlog` folders together, a parent folder that holds them, or several zips,
-then **Analyse N logs**. Every folder whose name ends in `_armlog` is one log; each is read
+Drop several `_armlog` folders together, a parent folder that holds them, or several zips, or
+choose them one by one with **Choose a folder** and **Add another folder**, then **Analyse N
+logs**. Every folder whose name ends in `_armlog` is one log; each is read
 on its own, one after the other. The **All logs** page then says which folders have issues
 and shows a card per folder: the main problem and what to do, *All good*, or why it could
 not be analysed (for example a folder without a `.logel`). **Open this log** shows that
@@ -83,22 +86,25 @@ back. Copy report copies the All logs page, and HTML report shares every log in 
 
 ## Logel captures (UNISOC armlog)
 
-Logel saves a capture as a folder (`<date>_armlog`) of about 40 files. Drop the folder, its
-zip or the `.logel` on **Upload log**, then **Analyse log**. The page unzips it itself and
-reads only what helps troubleshooting. The **Files** tab lists every file with what was done
-with it and why.
+Logel saves a capture as a folder (`<date>_armlog`) of about 40 files. Choose or drop the
+folder, its zip or the `.logel` on **Upload log**, then **Analyse log**. The page unzips it
+itself (zips inside it too) and reads **every file**: each with the reader for its kind, and
+every one searched line by line for asserts and crashes, however large. A file of a kind this
+page does not know is still searched and described, so a file a future Logel adds is not
+missed. The **Files** tab lists every file with what it holds and what was found in it; empty
+files are listed as empty, with what they would have held.
 
-| File | Used for |
+| File | What is read |
 | --- | --- |
-| `<name>.logel` | Analysed: every RRC and NAS message with the channel the modem logged and a ms timestamp, the modem's serving cell RSRP / RSRQ / SINR traces, its AT answers (+CESQ, +C5GREG, +COPS, +CGCONTRDP), and every assert or crash line |
-| `*.ass` | Analysed: the modem's assert record, read field by field (see below) |
-| Memory dumps (`.mem`, `.dmp`, `*dump*`) and files named for a crash, assert, panic, watchdog or exception | Analysed: the assert they hold, or the fact that a dump was saved |
-| `traceview.dat`, `phytraceview.dat` | Searched: Logel's decoded copy of every trace (the PHY traces too), timed with `traceview.pbs` |
-| `<name>.cap` | Analysed when it has packets: IP traffic, every DNS lookup and whether it was answered |
-| `<name>_lte.csv`, `_nr.csv` ... | Analysed when they hold rows: RSRP / SINR samples |
-| `.lst`, `_modem.ini`, `_log_stat.txt`, `_bookmark.xml` | Read for information: modem and Logel versions, lost packets, bug notes |
-| `msgview.*`, `phyparamchart.*`, DSP traces, `_bt.cap`, `_wcn.cap`, any other file | Searched for asserts and crashes; otherwise Logel's display cache, chip traces or other chips |
-| `.iq`, `.wvoice`, `_vt_*.bin`, empty files | Not needed: radio samples and call media, with no text to search |
+| `<name>.logel` | Every RRC and NAS message with the channel the modem logged and a ms timestamp, the modem's serving cell RSRP / RSRQ / SINR traces, its AT answers (+CESQ, +C5GREG, +COPS, +CGCONTRDP), every assert or crash line, the modem's assert console and the memory dump it sends after an assert |
+| `<name>.ass` | The modem's assert record, read field by field (see below) |
+| `<name>_1.mem`, `_2.mem` ... | Memory dump (`0x12345678` header) or RFIC register dump (`RFICDEBG`): what it is, which assert saved it, and the asserts kept in modem memory |
+| `traceview.dat`, `phytraceview.dat` | Logel's decoded copy of every trace (the PHY traces too), searched in full; each line timed through `traceview.pbs`, whose rows point at the `.logel` packet it came from |
+| `<name>.cap` and every other `.cap` | Packets: IP traffic, every DNS lookup and whether it was answered; AT commands in an AT channel capture; header-only captures said to be empty |
+| `<name>_lte.csv`, `_nr.csv`, `_gsm.csv`, `_wcdma.csv` | Measurement samples, or "only the column titles" |
+| `.lst` | Modem, parser and Logel versions, and what happened while logging ("Device is plugged out") |
+| `_modem.ini`, `_log_stat.txt`, `_bookmark.xml` | Versions and build time; protocol stack and PHY packets logged and lost; bug ID and notes |
+| `msgview.*`, `msgflowview.*`, `phyparamchart.*`, DSP traces, `_bt.cap`, `_wcn.cap`, `.iq`, call media, any other file | Searched in full, and described |
 
 The `.logel` is a sequence of UNISOC diag packets. Only the protocol stack stream is read
 (the PHY stream, often 90 % of the file, needs UNISOC's trace database). Messages appear
@@ -108,25 +114,39 @@ the analysis counts that as one attempt. Times are the capture PC's clock, as in
 ### Asserts and crashes
 
 Every file of the capture is searched, line by line and whole however large it is (the
-`.logel`, Logel's 300 MB+ decoded traces, binaries as their printable text, UTF-16 files), for
+`.logel`, Logel's 400 MB decoded traces, binaries as their printable text, UTF-16 files), for
 asserts, exceptions (data / prefetch abort, undefined instruction, hard / bus / usage fault),
 watchdog resets, modem resets and crashes, panics, stack overflow and memory failures. The
 **Asserts** tab shows:
 
-- each assert record (`.ass`) or crash file, read field by field: where the modem stopped
-  (source file and line), the modem part (NR RRC, NAS, L1 ...), the task, the check that
-  failed, its message, the exception, the time, the software version, the registers and the
-  call stack, the messages logged just before it, and the whole record as written. A memory
-  dump holding the same assert counts once.
-- every assert or crash line, grouped when it repeats, with how often, when (the modem's log
-  time, from the packet in the `.logel` or from `traceview.pbs`) and in which files.
-- lines that only mention an assert or crash in passing, kept apart so nothing is missed.
-- the files searched, the ones with a crash marked.
+- each assert record, read in full. A UNISOC record (`.ass`, and the same text the modem
+  prints on its assert console inside the `.logel`) gives: the core and assert number, the
+  source file and line, the check (`PASSERT(FALSE)`, `SCI_ASSERT(...)`), the assert info, the
+  running task with its queue use and stack, the software versions and build time, the
+  registers before the assert and those of each CPU mode, the program counter of every core,
+  the files the assert saved (memory dump, RFIC registers, Logel buffer) and whether each is in
+  the log, the memory regions, the memory in use (allocations summed by where they were made,
+  and a damaged byte pool), the commands typed at the assert console, and the whole record.
+  Other layouts are read field by field by their usual names.
+- every core at that moment: the `Modem Assert: <task> <core> assert in file X line N` lines
+  from the traces, the one that asserted first and the ones stopped with it.
+- an assert **asked for** with `AT+SPATASSERT`: the modem did not fail on its own, it was told
+  to stop to save a memory dump (by hand, by a test tool, or by the host when the modem stops
+  answering). It is shown as such, with when and on which AT channel the command arrived, and
+  it is not taken for the root cause.
+- the messages logged just before each assert.
+- every other assert or crash line, grouped when it repeats, with how often, when and in which
+  files; lines that only mention one in passing, kept apart; and the files searched.
 
-An assert or crash is the root cause on the Summary whenever there is one, with a card under
-the headline; it is reported even when the log holds no messages beside it. When nothing is
-found, the Asserts tab says so. The `.ass` layout differs between modem versions, so it is
-read as text and each field is looked for by its usual names; the whole record is always kept.
+Times come from one clock: the protocol stack stream of the `.logel`, and for every other
+packet (PHY streams with their own clocks, the assert console) its place in the file. A memory
+dump holds the firmware's own message text (`psAssert %s`, "Watch Dog Timer Expired."), so
+only finished assert lines are read from it, as the modem's list of recent asserts.
+
+A real assert or crash is the root cause on the Summary, with a card under the headline; it is
+reported even when the log holds no messages beside it. An assert asked for is a card of its
+own, and the headline stays on what went wrong before it. When nothing is found, the Asserts
+tab says so.
 
 Limits: ciphered NAS cannot be read without keys (Logel normally records NAS after
 deciphering, which decodes fine). MAC / RLC / PDCP headers and Logel's own record headers

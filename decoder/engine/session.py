@@ -558,6 +558,9 @@ def _narrative(items, procs, findings):
     for f in findings:
         if f["severity"] == "critical" and not f.get("procedure") and f.get("refs"):
             lines.append({"i": f["refs"][-1], "severity": "critical", "text": f["title"]})
+        # an assert asked for on purpose is still part of the story
+        elif f.get("forced") and f.get("refs"):
+            lines.append({"i": f["refs"][-1], "severity": "warning", "text": f["title"]})
     lines.sort(key=lambda x: x["i"])
     root = None
     crit = [f for f in findings if f["severity"] == "critical"]

@@ -250,6 +250,62 @@ export interface AssertRecord {
   stack: string[];
   raw: string;
   fromDump?: boolean;
+  /** which core asserted (PS CP, NR PHY ...) and its assert number ("core0 assert 1") */
+  core?: string;
+  number?: number;
+  /** the assert was requested, not a fault: the command that asked for it (AT+SPATASSERT) */
+  forced?: string;
+  /** when and where that command reached the modem */
+  forcedBy?: { ts?: string | null; line: string; channel?: string };
+  /** firmware build time printed with the versions (not the time of the assert) */
+  build?: string;
+  versions?: { label: string; value: string }[];
+  /** the task that was running: ID, name, queue use, stack bounds */
+  thread?: { label: string; value: string }[];
+  cpuMode?: string;
+  corePcs?: { core: string; pc: string }[];
+  banked?: { mode: string; registers: { name: string; value: string }[] }[];
+  /** asserts of every core at that moment, from the traces: the one that asked and the ones stopped with it */
+  cores?: CoreAssert[];
+  /** asserts kept in modem memory (the firmware's recent-asserts list), from dumps */
+  history?: CoreAssert[];
+  /** files the assert handler wrote, and whether they are in the log */
+  dumps?: { file: string; size?: number; what: string; present?: boolean }[];
+  regions?: { name: string; start: string; length: string }[];
+  memory?: AssertMemory;
+  /** section headings in the record, so nothing in it goes unseen */
+  sections?: string[];
+  /** commands typed at the assert console (t, reboot ...) */
+  commands?: string[];
+  /** other files that hold the same record */
+  also?: string[];
+}
+
+/** One "Modem Assert: <task> <core> assert in file X line N exp=E info=[I]" line. */
+export interface CoreAssert {
+  core: string;
+  task?: string;
+  file: string;
+  line: number;
+  exp?: string;
+  info?: string;
+  ts?: string | null;
+  from: string;
+}
+
+export interface MemoryUse {
+  site: string;
+  count: number;
+  bytes: number;
+}
+
+/** Memory at the assert, from the allocation lists the assert handler printed. */
+export interface AssertMemory {
+  blockPool?: { entries: number; bytes: number; top: MemoryUse[]; byEntity: MemoryUse[] };
+  bytePool?: { entries: number; bytes: number; top: MemoryUse[]; corrupted?: string };
+  initialized?: { entries: number; bytes: number; top: MemoryUse[]; byEntity: MemoryUse[] };
+  /** a list that stopped part way, because the record or the log ends there */
+  cutShort?: string;
 }
 
 /** The same assert or crash line wherever it was found, with how often and when. */
@@ -262,6 +318,8 @@ export interface CrashGroup {
   count: number;
   first: string | null;
   last: string | null;
+  /** the assert record this line belongs to (a core stopping with it, the command that asked for it) */
+  explained?: string;
 }
 
 export interface CrashInfo {

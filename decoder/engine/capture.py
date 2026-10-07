@@ -409,6 +409,29 @@ CRASH_CAUSES = {
     "fatal": ["The modem reported an error it cannot recover from"],
 }
 
+FORCED_CAUSES = [
+    "Someone, or a test tool, sent the command to save a memory dump of the modem",
+    "The host sent it because the modem stopped answering (a hang the host recovers from by forcing a dump)",
+]
+
+FORCED_CHECKS = [
+    "Ask who sent the command and why: by hand, a test script, or the host's modem recovery",
+    "Look at what happened just before it: an unfinished procedure or a silent modem is usually what was being captured",
+    "If the host sent it, check the host log for a modem timeout around that time",
+]
+
+
+def _cores_text(e):
+    """The other cores that stopped with an assert, from its 'cores' list."""
+    own = (e.get("core") or "").lower()
+    others = [c for c in e.get("cores") or [] if (c.get("core") or "").lower() != own]
+    if not others:
+        return ""
+    names = sorted({c["core"] for c in others})
+    where = sorted({f"{c['file']} line {c['line']}" for c in others})
+    return f" {', '.join(names)} stopped with it ({', '.join(where)}): when one core asserts, the others are stopped too."
+
+
 CRASH_CHECKS = [
     "Send the assert record (.ass), the .logel and the modem build to UNISOC: they map the file and line to the cause",
     "Check whether the same assert repeats in other logs, and what the network sent just before it",
@@ -428,6 +451,34 @@ def _before(ts, stamps):
     return best
 
 
+def _memory_findings(e):
+    """What the assert record shows about the running task's queue and the modem's memory."""
+    out = []
+    th = {t["label"].lower(): t["value"] for t in e.get("thread") or []}
+    try:
+        used, total = int(th.get("queue used", "")), int(th.get("queue total", ""))
+    except ValueError:
+        used = total = 0
+    if total and used >= total * 0.9:
+        out.append({"severity": "warning", "title": f"{e.get('task') or 'The task'}'s message queue was nearly full",
+                    "detail": f"{used} of {total} messages were waiting in {th.get('queue name', 'its queue')} when it asserted: "
+                              "the task had stopped keeping up, or was stuck, before it stopped.",
+                    "causes": ["The task was blocked (waiting on a lock, a timer or another task) and messages piled up",
+                               "A burst of messages the task could not handle in time"],
+                    "checks": ["Look at what the task was doing just before the assert", "Check the tasks it waits on"],
+                    "refs": [], "category": "crash", "source": "assert"})
+    mem = e.get("memory") or {}
+    bad = (mem.get("bytePool") or {}).get("corrupted")
+    if not bad:
+        return out
+    return out + [{"severity": "warning", "title": "The modem's byte pool looked damaged at the assert",
+             "detail": f"While listing the byte pool the assert handler stopped with \u201c{bad}\u201d. A heap corruption is "
+                       "possible; it can also be a side effect of reading the lists after the modem stopped.",
+             "causes": ["A buffer overrun or a double free in the modem firmware"],
+             "checks": ["Send the assert record and the memory dump to UNISOC", "See whether the same message appears in other asserts"],
+             "refs": [], "category": "crash", "source": "assert"}]
+
+
 def _crash_findings(crashes, stamps):
     """Every assert and crash, each its own critical finding, so none can be missed."""
     if not crashes:
@@ -437,6 +488,25 @@ def _crash_findings(crashes, stamps):
     groups = crashes.get("groups") or []
     covered = set()
     for e in events:
+        if e.get("forced"):
+            ref = _before(e.get("ts"), stamps)
+            by = e.get("forcedBy") or {}
+            who = (e.get("core") or "The modem") + (f" (task {e['task']})" if e.get("task") else "")
+            detail = (f"{who} stopped at {e.get('where') or 'its assert handler'} because it was asked to: "
+                      f"the assert info says \u201c{e.get('message') or e['forced']}\u201d."
+                      + (f" {e['forced']} reached the modem at {by['ts']}" + (f" on AT channel {by['channel']}" if by.get("channel") else "") + "."
+                         if by.get("ts") else "")
+                      + _cores_text(e)
+                      + " This is how a memory dump is taken on purpose: it is not a fault of the modem."
+                      + (f" Recorded in {e['file']}" + (f" at {e['ts']}" if e.get("ts") else "") + "."))
+            out.append({"severity": "warning", "title": e.get("title") or f"Assert requested by {e['forced']}", "detail": detail,
+                        "causes": FORCED_CAUSES, "checks": FORCED_CHECKS, "refs": [ref] if ref is not None else [],
+                        "category": "crash", "source": "assert", "at": e.get("ts"), "forced": True})
+            for k, g in enumerate(groups):
+                if g.get("explained") or e["file"] in (g.get("files") or {}):
+                    covered.add(k)
+            out += _memory_findings(e)
+            continue
         if e.get("fromDump") and not e.get("where") and not e.get("expression") and e.get("kind") == "reset":
             out.append({"severity": "critical", "title": "The modem crashed: a memory dump was saved",
                         "detail": f"{e['file']} is written when the modem crashes (or when a dump is taken by hand). It holds "
@@ -455,6 +525,7 @@ def _crash_findings(crashes, stamps):
         detail = ", ".join(bits) + (f": {why}" if why else "") + "." if bits or why else ""
         if e.get("exception") and e.get("kind") != "assert":
             detail += f" Exception: {e['exception']}."
+        detail += _cores_text(e)
         detail += f" Recorded in {e['file']}" + (f" at {e['ts']}" if e.get("ts") else "") + "."
         ref = _before(e.get("ts"), stamps)
         out.append({"severity": "critical", "title": e.get("title") or "Modem assert", "detail": detail.strip(),
@@ -462,8 +533,9 @@ def _crash_findings(crashes, stamps):
                     "refs": [ref] if ref is not None else [], "category": "crash", "source": "assert", "at": e.get("ts")})
         src = (e.get("source") or "").split("/")[-1].lower()
         for k, g in enumerate(groups):
-            if (src and src in g["text"].lower()) or e["file"] in (g.get("files") or {}):
+            if g.get("explained") or (src and src in g["text"].lower()) or e["file"] in (g.get("files") or {}):
                 covered.add(k)
+        out += _memory_findings(e)
     # strong lines no record explains: one finding per kind
     by_kind = {}
     for k, g in enumerate(groups):

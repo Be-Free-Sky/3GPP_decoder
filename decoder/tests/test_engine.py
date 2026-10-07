@@ -259,6 +259,35 @@ class Crashes(unittest.TestCase):
         self.assertEqual(len(crash), 2)
         self.assertEqual(s["narrative"]["root"]["title"], "The modem watchdog fired")  # it came first
 
+    def test_requested_assert_is_not_the_fault(self):
+        forced = {"file": "x.ass", "kind": "assert", "title": "Assert requested by AT+SPATASSERT (atc_basic_cmd.c line 26348)",
+                  "where": "atc_basic_cmd.c line 26348", "source": "atc_basic_cmd.c", "line": 26348, "expression": "PASSERT(FALSE)",
+                  "message": "Assert by AT+SPATASSERT", "task": "T_P_ATC", "core": "PS CP", "forced": "AT+SPATASSERT",
+                  "forcedBy": {"ts": "09:14:02.940", "line": "ATC: ...line:AT+SPATASSERT=1", "channel": "2"},
+                  "cores": [{"core": "PS CP", "file": "atc_basic_cmd.c", "line": 26348, "from": "a.logel"},
+                            {"core": "NR PHY", "file": "threadx_assert.c", "line": 6169, "from": "a.logel"}],
+                  "ts": "09:14:02.950", "registers": [], "stack": [], "raw": ""}
+        groups = [{"kind": "assert", "strong": True, "text": "TXAS_SystemAssert Modem Assert:  NR PHY assert in file threadx_assert.c line 6169",
+                   "files": {"a.logel": 1}, "count": 1, "first": "09:14:02.950", "last": "09:14:02.950", "explained": forced["title"]}]
+        s = engine.decode_capture(capture_of("nr-sa-slice-reject", crashes={"events": [forced], "groups": groups, "searched": ["a"], "lines": 1}))["session"]
+        crash = [f for f in s["findings"] if f.get("category") == "crash"]
+        # one finding, a warning: the slice reject stays the root cause
+        self.assertEqual(len(crash), 1)
+        self.assertEqual(crash[0]["severity"], "warning")
+        self.assertIn("AT channel 2", crash[0]["detail"])
+        self.assertIn("NR PHY stopped with it", crash[0]["detail"])
+        self.assertIn("#62", s["narrative"]["root"]["title"])
+        self.assertTrue(any("AT+SPATASSERT" in st["text"] for st in s["narrative"]["steps"]))
+
+    def test_full_queue_and_damaged_pool(self):
+        e = dict(ASSERT_EVENT, thread=[{"label": "Queue Name", "value": "Q_NRRC"}, {"label": "Queue Total", "value": "100"},
+                                       {"label": "Queue Used", "value": "97"}],
+                 memory={"bytePool": {"entries": 1, "bytes": 10, "top": [], "corrupted": "memory is corrupted, abnormal termination"}})
+        s = engine.decode_capture(capture_of("nr-sa-slice-reject", crashes={"events": [e], "groups": [], "searched": ["a"], "lines": 0}))["session"]
+        titles = [f["title"] for f in s["findings"]]
+        self.assertTrue(any("queue was nearly full" in t for t in titles))
+        self.assertTrue(any("byte pool looked damaged" in t for t in titles))
+
     def test_nothing_found_is_said(self):
         groups = [{"kind": "assert", "strong": False, "text": "assert check passed", "files": {"a": 1}, "count": 1, "first": None, "last": None}]
         s = engine.decode_capture(capture_of("lte-attach-ok", crashes={"events": [], "groups": groups, "searched": ["a", "b"], "lines": 1}))["session"]

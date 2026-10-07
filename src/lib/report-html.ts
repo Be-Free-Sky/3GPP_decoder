@@ -16,8 +16,8 @@ import { buildAreas, buildHeadline, type AreaStatus } from "@/lib/areas";
 import { carriedTitle, directionLabel, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
 import { SKYWORTH_LOGO_SVG } from "@/components/app/skyworth-logo";
 import { fleetOverview, logFacts, logVerdict, type FleetLog, type Tone as LogTone } from "@/lib/fleet";
-import { KIND_LABEL, SURE, crashCounts, crashHeadline, dumpOnly, messagesBefore } from "@/lib/crashes";
-import { searchedCount, type AssertRecord, type CrashGroup } from "@/lib/engine/types";
+import { KIND_LABEL, SURE, crashCounts, crashHeadline, crashTone, dumpOnly, messagesBefore } from "@/lib/crashes";
+import { searchedCount, type AssertRecord, type CoreAssert, type CrashGroup, type MemoryUse } from "@/lib/engine/types";
 
 export type ReportTab = "summary" | "flow" | "messages" | "radio" | "context" | "crashes" | "files";
 
@@ -278,7 +278,7 @@ function summaryHtml(report: Report) {
       { top: TONE[tone].mark, pad: "20px 22px" },
     ),
   );
-  if (report.capture?.crashes && crashHeadline(report.capture.crashes).found) out.push(crashSummaryHtml(report));
+  if (report.capture?.crashes && crashTone(report.capture.crashes) !== "ok") out.push(crashSummaryHtml(report));
   const areas = buildAreas(report).map((a) => {
     const t = AREA_TONE[a.status];
     return card(
@@ -647,20 +647,28 @@ function contextHtml(report: Report) {
 function crashSummaryHtml(report: Report) {
   const c = report.capture!.crashes!;
   const n = crashCounts(c);
-  const rows = c.events.length
-    ? c.events.map((e) => [
-        `<b>${esc(e.title)}</b><div style="${MONO}font-size:12px;color:${C.ink2}">${esc([e.task && `task ${e.task}`, e.expression].filter(Boolean).join(": ") || e.file)}</div>`,
-        chip(dumpOnly(e) ? "Memory dump" : KIND_LABEL[e.kind], "bad"),
-        mono(esc(e.ts ?? ""), C.ink2),
-      ])
-    : n.strong.slice(0, 3).map((g) => [`${mono(esc(g.text))}`, chip(KIND_LABEL[g.kind], SURE.includes(g.kind) ? "bad" : "warn"), mono(esc(g.first ?? ""), C.ink2)]);
+  const tone = crashTone(c);
+  const allForced = tone === "warn" && c.events.length > 0 && c.events.every((e) => e.forced);
+  const rows = [
+    ...c.events.map((e) => [
+      `<b>${esc(e.title)}</b><div style="${MONO}font-size:12px;color:${C.ink2}">${esc([e.core, e.task && `task ${e.task}`, e.expression, e.message].filter(Boolean).join(" · ") || e.file)}</div>`,
+      chip(dumpOnly(e) ? "Memory dump" : e.forced ? "Requested assert" : KIND_LABEL[e.kind], e.forced ? "warn" : "bad"),
+      mono(esc(e.ts ?? ""), C.ink2),
+    ]),
+    ...n.strong
+      .filter((g) => !g.explained)
+      .slice(0, 3)
+      .map((g) => [`${mono(esc(g.text))}`, chip(KIND_LABEL[g.kind], SURE.includes(g.kind) ? "bad" : "warn"), mono(esc(g.first ?? ""), C.ink2)]),
+  ];
   return card(
     head(
-      "The modem crashed",
-      `${n.records ? `${n.records} assert ${n.records === 1 ? "record" : "records"}` : "No assert record"}, ${n.strongLines} assert or crash ${n.strongLines === 1 ? "line" : "lines"} in ${n.searched} files searched.`,
+      allForced ? "The modem was stopped on request" : tone === "bad" ? "The modem crashed" : "Asserts and resets",
+      allForced
+        ? `An assert was asked for with ${c.events[0].forced} to save a memory dump. ${n.searched} files searched; no other assert or crash.`
+        : `${n.records ? `${n.records} assert ${n.records === 1 ? "record" : "records"}` : "No assert record"}, ${n.strongLines} assert or crash ${n.strongLines === 1 ? "line" : "lines"} in ${n.searched} files searched.`,
       "&#9888;",
     ) + dataTable(["What", "Kind", "Time"], rows),
-    { top: C.bad },
+    { top: tone === "bad" ? C.bad : C.warn },
   );
 }
 
@@ -668,8 +676,8 @@ function crashGroupsHtml(groups: CrashGroup[]) {
   return dataTable(
     ["Kind", "Line in the log", "First seen", "Times", "Found in"],
     groups.map((g) => [
-      chip(KIND_LABEL[g.kind], g.strong ? (SURE.includes(g.kind) ? "bad" : "warn") : "neutral"),
-      mono(esc(g.text)),
+      chip(KIND_LABEL[g.kind], !g.strong ? "neutral" : g.explained || !SURE.includes(g.kind) ? "warn" : "bad"),
+      mono(esc(g.text)) + (g.explained ? `<div style="${FONT}font-size:12px;color:${C.muted}">Part of: ${esc(g.explained)}</div>` : ""),
       mono(esc(`${g.first ?? "n/a"}${g.last && g.last !== g.first ? ` to ${g.last}` : ""}`), C.ink2),
       mono(`<b>${g.count}</b>`),
       mono(Object.entries(g.files).map(([f, k]) => `${esc(f)}${k > 1 ? ` x${k}` : ""}`).join("<br>"), C.ink2),
@@ -678,61 +686,114 @@ function crashGroupsHtml(groups: CrashGroup[]) {
   );
 }
 
+const subHead = (t: string) => `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">${t}</div>`;
+
+function regGrid(regs: { name: string; value: string }[]) {
+  return grid(
+    regs.map((r) => table(`<tr><td style="padding:4px 8px;background:${C.panel2};border:1px solid ${C.line};border-radius:8px;${MONO}font-size:12px"><span style="color:${C.muted}">${esc(r.name)}</span>&nbsp; <b style="color:${C.ink}">${esc(r.value)}</b></td></tr>`, "margin:0 0 6px 0;")),
+    4,
+    8,
+  );
+}
+
+function coresHtml(cores: CoreAssert[]) {
+  return dataTable(
+    ["Core", "Task", "Where", "Check", "Info", "Time", "Found in"],
+    cores.map((c) => [`<b>${esc(c.core)}</b>`, mono(esc(c.task ?? "")), mono(`<b>${esc(`${c.file} line ${c.line}`)}</b>`), mono(esc(c.exp ?? "")), mono(esc(c.info ?? "")), mono(esc(c.ts ?? "n/a"), C.ink2), mono(esc(c.from), C.ink2)]),
+  );
+}
+
+function usageHtml(title: string, list: MemoryUse[]) {
+  return subHead(esc(title)) + dataTable(["Allocated at", "Blocks", "Bytes"], list.map((u) => [mono(`<b>${esc(u.site)}</b>`), mono(u.count.toLocaleString("en")), mono(sizeText(u.bytes))]), ["left", "right", "right"]);
+}
+
 function crashEventHtml(e: AssertRecord, report: Report, ctx: Ctx) {
+  const tone: Tone = e.forced ? "warn" : "bad";
   const fields: [string, string][] = [];
-  if (e.source) fields.push(["Where it stopped", mono(`<b>${esc(e.source)}</b>${e.line ? ` <b style="color:${C.badInk}">line ${e.line}</b>` : ""}`)]);
+  if (e.source) fields.push(["Where it stopped", mono(`<b>${esc(e.source)}</b>${e.line ? ` <b style="color:${TONE[tone].fg}">line ${e.line}</b>` : ""}`)]);
   if (e.module) fields.push(["Modem part", esc(e.module)]);
+  if (e.core) fields.push(["Core", esc(e.core)]);
   if (e.task) fields.push(["Task", mono(`<b>${esc(e.task)}</b>`)]);
-  if (e.expression) fields.push(["Check that failed", mono(`<b>${esc(e.expression)}</b>`)]);
-  if (e.message) fields.push(["Message", esc(e.message)]);
+  if (e.expression) fields.push(["Check", mono(`<b>${esc(e.expression)}</b>`)]);
+  if (e.message) fields.push(["Assert info", esc(e.message)]);
   if (e.exception) fields.push(["Exception", esc(e.exception)]);
   if (e.ts) fields.push(["Time", mono(esc(e.ts))]);
-  if (e.version) fields.push(["Software", mono(esc(e.version))]);
+  if (e.cpuMode) fields.push(["CPU mode", mono(esc(e.cpuMode))]);
+  if (e.version) fields.push(["Software", mono(esc(e.version)) + (e.build ? `<div style="${FONT}font-size:12px;color:${C.muted}">built ${esc(e.build)}</div>` : "")]);
   const before = messagesBefore(report.messages, e.ts);
-  const regs = e.registers.length
-    ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">Registers</div>${grid(
-        e.registers.map((r) => table(`<tr><td style="padding:4px 8px;background:${C.panel2};border:1px solid ${C.line};border-radius:8px;${MONO}font-size:12px"><span style="color:${C.muted}">${esc(r.name)}</span>&nbsp; <b style="color:${C.ink}">${esc(r.value)}</b></td></tr>`, "margin:0 0 6px 0;")),
-        4,
-        8,
-      )}`
+  const forced = e.forced
+    ? box(
+        `<b style="color:${C.warnInk}">Asked for, not a fault.</b> The assert info says &ldquo;${esc(e.message ?? e.forced)}&rdquo;: the modem stopped because it received <b>${esc(e.forced)}</b>${
+          e.forcedBy?.ts ? ` at ${esc(e.forcedBy.ts)}` : ""
+        }${e.forcedBy?.channel ? ` on AT channel ${esc(e.forcedBy.channel)}` : ""}. This is how a memory dump is taken on purpose, by hand, by a test tool, or by the host when the modem stops answering.${
+          e.forcedBy?.line ? `<div style="${MONO}font-size:12px;color:${C.ink2};margin-top:4px">${esc(e.forcedBy.line)}</div>` : ""
+        }`,
+        "warn",
+      )
+    : "";
+  const mem = e.memory;
+  const memory = mem
+    ? subHead("Memory at the assert") +
+      (mem.bytePool?.corrupted ? box(`While listing the byte pool the modem stopped with &ldquo;${esc(mem.bytePool.corrupted)}&rdquo;: a heap corruption is possible.`, "warn") : "") +
+      (mem.cutShort ? para(esc(mem.cutShort)) : "") +
+      (mem.blockPool ? usageHtml(`Block pool: ${mem.blockPool.entries.toLocaleString("en")} allocations, ${sizeText(mem.blockPool.bytes)}. Most allocations from:`, mem.blockPool.top) : "") +
+      (mem.bytePool ? usageHtml(`Byte pool: ${mem.bytePool.entries} allocations, ${sizeText(mem.bytePool.bytes)}`, mem.bytePool.top) : "") +
+      (mem.initialized ? usageHtml(`Initialised memory: ${mem.initialized.entries.toLocaleString("en")} allocations, ${sizeText(mem.initialized.bytes)}`, mem.initialized.top) : "")
     : "";
   const stack = e.stack.length
-    ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">Call stack (${e.stack.length} ${e.stack.length === 1 ? "frame" : "frames"}, innermost first)</div>${table(
+    ? subHead(`Call stack (${e.stack.length} ${e.stack.length === 1 ? "frame" : "frames"}, innermost first)`) +
+      table(
         `<tr><td style="padding:8px 12px;background:${C.panel2};border:1px solid ${C.line};border-radius:10px;${MONO}font-size:12px;line-height:1.6;color:${C.ink}">${e.stack
           .slice(0, 64)
-          .map((f, i) => (/^(#\d+|\[\s*\d+\s*\])/.test(f) ? esc(f) : `<span style="color:${C.muted}">${String(i).padStart(2, "\u00a0")}</span>&nbsp; ${esc(f)}`))
+          .map((f, i) => (/^(#\d+|\[\s*\d+\s*\])/.test(f) ? esc(f) : `<span style="color:${C.muted}">${String(i).padStart(2, " ")}</span>&nbsp; ${esc(f)}`))
           .join("<br>")}</td></tr>`,
-      )}`
+      )
     : "";
   const rawLines = e.raw.split("\n");
   const raw = e.raw
-    ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">The whole record, as written${
-        !ctx.file && rawLines.length > 80 ? ` (first 80 of ${rawLines.length} lines)` : ""
-      }</div>${table(
+    ? subHead(`The whole record, as written${!ctx.file && rawLines.length > 80 ? ` (first 80 of ${rawLines.length.toLocaleString("en")} lines)` : ""}`) +
+      table(
         `<tr><td style="padding:8px 12px;background:${C.panel2};border:1px solid ${C.line};border-radius:10px;${MONO}font-size:11.5px;line-height:1.5;color:${C.ink2};white-space:pre-wrap;word-break:break-all">${esc(
           (ctx.file ? rawLines : rawLines.slice(0, 80)).join("\n"),
         )}</td></tr>`,
-      )}`
+      )
     : "";
   const body = dumpOnly(e)
-    ? para("The modem writes this file only when it crashes. It holds no readable assert text; UNISOC's tools read the cause from it, so send it with the .logel.")
+    ? para("The modem writes this file only when it stops (it crashed, or a dump was asked for). It holds no readable assert text; UNISOC's tools read the cause from it, so send it with the .logel.")
     : dataTable(
         ["Field", "Value"],
         fields.map(([k, v]) => [`<span style="color:${C.muted}">${k}</span>`, v]),
       );
   return card(
-    `<div style="${FONT}font-size:17px;font-weight:700;color:${C.ink}">${esc(e.title)}</div>${space(6)}${chip(dumpOnly(e) ? "Memory dump" : KIND_LABEL[e.kind], "bad")}${chip(esc(e.file), "neutral", true)}${
-      e.ts ? chip(`at ${esc(e.ts)}`, "neutral", true) : ""
-    }${space(6)}${body}${
+    `<div style="${FONT}font-size:17px;font-weight:700;color:${C.ink}">${esc(e.title)}</div>${space(6)}${chip(dumpOnly(e) ? "Memory dump" : e.forced ? "Requested assert" : KIND_LABEL[e.kind], tone)}${chip(esc(e.file), "neutral", true)}${(e.also ?? [])
+      .map((a) => chip(`also in ${esc(a)}`, "neutral", true))
+      .join("")}${e.ts ? chip(`at ${esc(e.ts)}`, "neutral", true) : ""}${forced}${space(6)}${body}${e.cores?.length ? subHead("Every core at that moment") + coresHtml(e.cores) : ""}${
       before.length
-        ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">Just before it in the log</div>${dataTable(
+        ? subHead("Just before it in the log") +
+          dataTable(
             ["Time", "Message", ""],
             before.map((m) => [mono(esc(m.timestamp ?? ""), C.ink2), `<b>${esc(m.result.ok ? m.result.message?.title : "Could not decode")}</b>`, ref(m.index)]),
             ["left", "left", "right"],
-          )}`
+          )
         : ""
-    }${regs}${stack}${raw}`,
-    { top: C.bad },
+    }${e.thread?.length ? subHead("The task that was running") + dataTable(["Item", "Value"], e.thread.map((t) => [`<span style="color:${C.muted}">${esc(t.label)}</span>`, mono(`<b>${esc(t.value)}</b>`)])) : ""}${
+      e.registers.length ? subHead("Registers before the assert") + regGrid(e.registers) : ""
+    }${e.corePcs?.length ? subHead("Program counter of each core") + dataTable(["Core", "PC (three samples)"], e.corePcs.map((c) => [`<b>${esc(c.core)}</b>`, mono(esc(c.pc))])) : ""}${(e.banked ?? [])
+      .map((b) => subHead(`${esc(b.mode)} mode registers`) + regGrid(b.registers))
+      .join("")}${stack}${
+      e.dumps?.length
+        ? subHead("Files the assert saved") +
+          dataTable(
+            ["File", "What it holds", "Size", "In this log"],
+            e.dumps.map((d) => [mono(`<b>${esc(d.file)}</b>`), esc(d.what), mono(d.size ? sizeText(d.size) : ""), chip(d.present ? "Yes" : "Missing", d.present ? "ok" : "warn")]),
+          )
+        : ""
+    }${e.regions?.length ? subHead("Memory regions in the dump") + dataTable(["Region", "Start", "Length"], e.regions.map((r) => [mono(`<b>${esc(r.name)}</b>`), mono(esc(r.start)), mono(sizeText(parseInt(r.length, 16)))])) : ""}${memory}${
+      e.history?.length ? subHead("Asserts kept in modem memory (from the memory dump)") + coresHtml(e.history) : ""
+    }${e.sections?.length ? subHead("Sections in the record") + e.sections.map((s) => chip(esc(s), "neutral", true)).join("") : ""}${
+      e.commands?.length ? para(`Typed at the assert console: ${mono(`<b>${esc(e.commands.join(", "))}</b>`)}`) : ""
+    }${raw}`,
+    { top: TONE[tone].mark },
   );
 }
 
@@ -741,7 +802,7 @@ function crashesHtml(report: Report, ctx: Ctx) {
   if (!c) return card(para("This decode did not come from a log capture, so no file was searched for asserts."));
   const h = crashHeadline(c);
   const n = h.n;
-  const tone: Tone = h.found ? "bad" : "ok";
+  const tone: Tone = h.tone === "bad" ? "bad" : h.tone === "warn" ? "warn" : "ok";
   const stat = (label: string, v: number, bad = false) =>
     table(
       `<tr><td style="padding:9px 12px;background:${C.panel2};border:1px solid ${C.line};border-radius:12px;${FONT}"><div style="font-size:12px;color:${C.muted}">${label}</div><div style="${MONO}font-size:20px;font-weight:700;color:${bad && v ? C.badInk : C.ink}">${v}</div></td></tr>`,
@@ -750,7 +811,7 @@ function crashesHtml(report: Report, ctx: Ctx) {
     card(
       `${chip(esc(h.kick), tone)}<div style="${FONT}font-size:22px;line-height:1.3;font-weight:700;color:${C.ink};margin:8px 0 0 0">${esc(h.head)}</div>${para(esc(h.detail), "font-size:15px")}${
         h.todo ? box(`<b style="color:${C.okInk}">&#10003; What to do</b>&nbsp;&nbsp;${esc(h.todo)}`, "ok") : ""
-      }${space(12)}${grid([stat("Assert records", n.records, true), stat("Crash lines", n.strongLines, true), stat("Mentions", n.weakLines), stat("Files searched", n.searched)], 4, 8)}`,
+      }${space(12)}${grid([stat("Assert records", n.records, tone === "bad"), stat("Crash lines", n.strongLines, tone === "bad"), stat("Mentions", n.weakLines), stat("Files searched", n.searched)], 4, 8)}`,
       { top: TONE[tone].mark, pad: "20px 22px" },
     ),
     ...c.events.map((e) => crashEventHtml(e, report, ctx)),
@@ -779,7 +840,7 @@ function crashesHtml(report: Report, ctx: Ctx) {
           c.searched
             .map((f) => {
               const hit = n.strong.some((g) => g.files[f]) || c.events.some((e) => e.file === f);
-              return chip(esc(f), hit ? "bad" : "neutral", true);
+              return chip(esc(f), hit ? (tone === "bad" ? "bad" : "warn") : "neutral", true);
             })
             .join(""),
       ),
@@ -793,8 +854,8 @@ const sizeText = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB`
 
 function filesCard(cap: CaptureInfo, all: boolean) {
   const files = cap.files ?? [];
-  const ROLE = { analysed: ["Analysed", "ok"], info: ["Read for information", "info"], skipped: ["Not needed", "neutral"] } as const;
-  const shown = all ? files : files.filter((f) => f.role !== "skipped");
+  const ROLE = { analysed: ["Analysed", "ok"], info: ["Read for information", "info"], skipped: ["Empty", "neutral"] } as const;
+  const shown = all ? files : files.filter((f) => f.role !== "skipped").slice(0, 8);
   const rows = shown.map((f) => [
     `${mono(`<b>${esc(f.name)}</b>`)}<div style="${FONT}font-size:12.5px;color:${C.ink2}">${esc(f.reason)}</div>${f.detail ? `<div style="${FONT}font-size:12.5px;color:${C.ink}">${esc(f.detail)}</div>` : ""}`,
     chip(ROLE[f.role][0], ROLE[f.role][1]),
@@ -806,7 +867,7 @@ function filesCard(cap: CaptureInfo, all: boolean) {
   return card(
     head(
       all ? `Files in ${cap.name ?? "this log"}` : "Files in this log",
-      `${files.length} files: ${used} analysed, ${info} read for information, ${files.length - used - info} not needed.`,
+      `${files.length} files: ${used + info} analysed, ${files.length - used - info} empty.`,
       "&#9636;",
     ) + dataTable(["File", "Use", "Kind", "Size"], rows, ["left", "left", "left", "right"]),
   );

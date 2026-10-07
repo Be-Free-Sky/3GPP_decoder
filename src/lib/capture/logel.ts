@@ -38,6 +38,13 @@ export interface LogelResult {
   crash: CrashLine[];
   /** log time of a tick: protocol stack stream, and the PHY stream when it has its own clock */
   base: { ps: number | null; phy: number | null };
+  /** log time (ms) of the packet at a byte offset, from the protocol stack clock and the order of the
+   *  packets in the file: every stream, the assert console and Logel's trace index use it */
+  timeAt: (offset: number, tick?: number) => number | null;
+  /** what the modem printed on its assert console (UNISOC sends it inside the log) */
+  console?: { text: string; ms: number | null; packets: number };
+  /** a modem memory dump sent inside the log after an assert */
+  dump?: { bytes: number; packets: number; head: Uint8Array; ms: number | null };
   records: LogelRecord[];
   radio: RadioSample[];
   at: { ts: string | null; line: string }[];
@@ -52,6 +59,10 @@ export interface LogelResult {
 }
 
 import { scanText, type CrashLine } from "./crash";
+
+/** UNISOC packets that are not traces: the assert console (0xff/0x00) and a memory dump (0xff/0x01). */
+const CONSOLE = 0xff00;
+const DUMP = 0xff01;
 
 const NR_RRC: Record<number, string> = {
   1: "bcch-bch",
@@ -169,10 +180,8 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
   let truncated = false;
   // every packet's place in the file and the stream tick it belongs to, to time crash lines
   const pOff: number[] = [];
-  const pTick: number[] = [];
-  const pSub: number[] = [];
-  let curTick = 0;
-  let curSub = -1;
+  const pTick: number[] = []; // a trace packet's own tick, -1 for other packets
+  const pKind: number[] = []; // trace stream sub, or 0xff00 / 0xff01, or -1
   while (off + 12 <= data.length) {
     const L = dv.getUint32(off, true);
     if (L < 8 || off + 4 + L > data.length) {
@@ -182,10 +191,11 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
     const type = data[off + 10];
     const sub = data[off + 11];
     packets++;
+    pOff.push(off);
+    pTick.push(type === 0xf8 && L >= 32 ? dv.getUint32(off + 20, true) : -1);
+    pKind.push(type === 0xf8 && L >= 32 ? sub : type === 0xff && sub <= 1 ? (0xff00 | sub) : -1);
     if (type === 0xf8 && L >= 32) {
       const tick = dv.getUint32(off + 20, true);
-      curTick = tick;
-      curSub = sub;
       let s = streams.get(sub);
       if (!s) {
         s = { sub, parts: [], ticks: [], size: 0 };
@@ -208,19 +218,98 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
     } else if (type === 0x00 && sub === 0x00 && L > 8) {
       device += new TextDecoder("latin1").decode(data.subarray(off + 12, off + 4 + L));
     }
-    pOff.push(off);
-    pTick.push(curTick);
-    pSub.push(curSub);
     off += 4 + L;
   }
   const res = extract(data, streams, anchors, sync, device, packets, truncated, maxRecords);
 
-  // Search the whole file, every stream, for assert / crash / reset text, and time each hit.
+  // One clock for every packet. The protocol stack stream is dated by its start anchor (or the
+  // sync packet); the PHY streams' ticks can run on other clocks or pause, so every other packet
+  // takes the time of the protocol stack packet just before it in the file (packets are written
+  // in the order they arrive), or its own tick when its stream keeps time with it.
   const baseOf = (sub: number) => (sync && sync.sub === sub ? sync.base : anchors.get(sub) ?? null);
-  const psSub = res.psSub;
+  const psSub = res.psSub ?? [...streams.values()].filter((x) => baseOf(x.sub) !== null).sort((a, b) => b.parts.length - a.parts.length)[0]?.sub;
+  const psBase = psSub != null ? baseOf(psSub) : null;
+  const n = pOff.length;
+  const ms = new Float64Array(n).fill(NaN);
+  const clocked = new Set<number>(); // streams whose own ticks keep time with the protocol stack
+  if (psBase !== null) {
+    if (psSub != null) clocked.add(psSub);
+    let last = NaN;
+    for (let i = 0; i < n; i++) {
+      if (pKind[i] === psSub) last = psBase + pTick[i];
+      ms[i] = last;
+    }
+    let next = NaN;
+    for (let i = n - 1; i >= 0; i--) {
+      if (pKind[i] === psSub) next = ms[i];
+      else if (Number.isNaN(ms[i])) ms[i] = next;
+    }
+    for (const st of streams.values()) {
+      if (st.sub === psSub) continue;
+      const d: number[] = [];
+      for (let i = 0; i < n; i++) if (pKind[i] === st.sub && !Number.isNaN(ms[i])) d.push(ms[i] - pTick[i]);
+      if (d.length < 3) continue;
+      const sorted = [...d].sort((x, y) => x - y);
+      const mid = sorted[sorted.length >> 1];
+      if (d.filter((x) => Math.abs(x - mid) < 2000).length >= d.length * 0.9) {
+        clocked.add(st.sub);
+        for (let i = 0; i < n; i++) if (pKind[i] === st.sub) ms[i] = mid + pTick[i];
+      }
+    }
+  }
+  const packetAt = (offset: number) => {
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (pOff[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  // a line's own tick refines its packet's time when its stream keeps time
+  res.timeAt = (offset: number, tick?: number) => {
+    if (!n) return null;
+    const i = packetAt(offset);
+    const v = ms[i];
+    if (Number.isNaN(v)) return null;
+    const d = tick === undefined || pTick[i] < 0 || !clocked.has(pKind[i]) ? 0 : tick - pTick[i];
+    return d > 0 && d < 10000 ? v + d : v;
+  };
   const phySub = [...streams.values()].filter((x) => x.sub !== psSub).sort((a, b) => b.size - a.size)[0]?.sub;
-  res.base = { ps: psSub != null ? baseOf(psSub) : null, phy: phySub != null ? baseOf(phySub) : null };
+  res.base = { ps: psBase, phy: phySub != null ? baseOf(phySub) : null };
+
+  // the assert console and a memory dump the modem sent after an assert
   const dec = new TextDecoder("latin1");
+  let consoleText = "";
+  let consolePackets = 0;
+  let consoleMs: number | null = null;
+  let dumpBytes = 0;
+  let dumpPackets = 0;
+  let dumpHead: Uint8Array | null = null;
+  let dumpMs: number | null = null;
+  for (let i = 0; i < n; i++) {
+    if (pKind[i] === CONSOLE) {
+      const L = dv.getUint32(pOff[i], true);
+      consoleText += dec.decode(data.subarray(pOff[i] + 12, pOff[i] + 4 + L)).replace(/\0+/g, "\n");
+      consolePackets++;
+      if (consoleMs === null && !Number.isNaN(ms[i])) consoleMs = ms[i];
+    } else if (pKind[i] === DUMP) {
+      const L = dv.getUint32(pOff[i], true);
+      dumpBytes += L - 8;
+      dumpPackets++;
+      if (!dumpHead) {
+        dumpHead = data.slice(pOff[i] + 12, pOff[i] + 12 + 64);
+        if (!Number.isNaN(ms[i])) dumpMs = ms[i];
+      }
+    }
+  }
+  if (consolePackets && consoleText.trim()) res.console = { text: consoleText, ms: consoleMs, packets: consolePackets };
+  if (dumpPackets && dumpHead) res.dump = { bytes: dumpBytes, packets: dumpPackets, head: dumpHead, ms: dumpMs };
+
+  // Search the whole file, every stream, for assert / crash / reset text, and time each hit. The
+  // console is read as an assert record and a memory dump holds the firmware's own message text,
+  // so neither is searched line by line here.
   const WIN = 16 * 1024 * 1024;
   const OVER = 1024;
   let lastEnd = -1;
@@ -230,16 +319,9 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the 
     for (const hit of scanText(text, fileName, from)) {
       if (hit.offset <= lastEnd) continue;
       lastEnd = hit.offset;
-      let lo = 0;
-      let hi = pOff.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (pOff[mid] <= hit.offset) lo = mid;
-        else hi = mid - 1;
-      }
-      const sub = pSub[lo] >= 0 ? pSub[lo] : psSub ?? -1;
-      const base = baseOf(sub) ?? res.base.ps;
-      hit.ts = base !== null && pTick[lo] ? fmtClock(base + pTick[lo]) : null;
+      const i = packetAt(hit.offset);
+      if (pKind[i] === CONSOLE || pKind[i] === DUMP) continue;
+      hit.ts = Number.isNaN(ms[i]) ? null : fmtClock(ms[i]);
       res.crash.push(hit);
     }
     if (res.crash.length > 5000) break;
@@ -409,6 +491,7 @@ function extract(
   return {
     crash: [],
     base: { ps: null, phy: null },
+    timeAt: () => null,
     psSub,
     records,
     radio: radio.filter((_, i) => i % step === 0).map(withoutTick),

@@ -179,3 +179,22 @@ export function summarizePcap(data: Uint8Array): IpSummary | null {
   s.servers = [...servers].slice(0, 6);
   return s;
 }
+
+/** Packets in any pcap, IP or not, and its link type (for AT channel, Bluetooth or other captures). */
+export function pcapCount(data: Uint8Array): { link: number; total: number } | null {
+  if (data.length < 24) return null;
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const magic = dv.getUint32(0, true);
+  const le = magic === 0xa1b2c3d4 || magic === 0xa1b23c4d;
+  const be = magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1;
+  if (!le && !be) return null;
+  let total = 0;
+  let off = 24;
+  while (off + 16 <= data.length) {
+    const incl = dv.getUint32(off + 8, le);
+    off += 16 + incl;
+    if (off > data.length) break;
+    total++;
+  }
+  return { link: dv.getUint32(20, le), total };
+}

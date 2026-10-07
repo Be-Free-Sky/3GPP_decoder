@@ -6,11 +6,14 @@ version files, empty files and a Logel view cache. No real device data is involv
 
     python decoder/tools/build_logel_fixture.py OUT.zip            one armlog (registration reject)
     python decoder/tools/build_logel_fixture.py OUT.zip --multi    four armlog folders in one zip:
-        registration reject, PDU session reject, a folder without a .logel, and a modem
-        assert (an .ass record, the assert in the .logel and in Logel's decoded traces, and
-        a memory dump)
+        registration reject; PDU session reject ending in an assert asked for with
+        AT+SPATASSERT (only in the .logel's assert console); a folder without a .logel; and a
+        modem assert in NR RRC (a UNISOC .ass record, the assert console and a memory dump
+        inside the .logel, the cores' assert lines, a memory dump and an RFIC dump)
 
-Every folder also has Logel's decoded trace view (traceview.dat with its traceview.pbs index).
+Every folder also has Logel's decoded trace view (traceview.dat with its traceview.pbs index,
+whose rows point at the .logel packet each line came from). The assert records follow the
+layout of real UNISOC records with made-up values.
 """
 
 import json
@@ -59,7 +62,9 @@ def trace(fmt, args=()):
     return struct.pack("<II", 0x3F, len(payload) // 4) + payload
 
 
-def build_logel(session, pc_start_ms=PC_START_MS, crash_tick=None):
+def build_logel(session, pc_start_ms=PC_START_MS, crash=None):
+    """crash: None, or {"tick", "record" (console text), "lines" (PS traces), "phy" (NR PHY trace)}.
+    Returns the file and the protocol stack packets as (file offset, tick)."""
     items = []  # (tick, bytes)
     lines = session["text"].splitlines()
     t0 = None
@@ -88,8 +93,8 @@ def build_logel(session, pc_start_ms=PC_START_MS, crash_tick=None):
     for tick, line in ((START_TICK + 50, '+C5GREG: 2,2'), (START_TICK + 400, '+CESQ: 99,99,255,255,255,255,72,68,70'),
                        (last + 30, '+C5GREG: 2,3'), (last + 40, '+COPS: 0,0,"Test Network",11')):
         items.append((tick, trace(line + "\r\n")))
-    if crash_tick is not None:
-        items.append((crash_tick, trace("SCI_ASSERT: nrrc_cell_select.c line %d, cell_idx < NRRC_MAX_CELL_NUM", (1187,))))
+    for line in (crash or {}).get("lines", []):
+        items.append((crash["tick"], trace(line)))
     items.sort(key=lambda x: x[0])
 
     out = bytearray()
@@ -104,20 +109,34 @@ def build_logel(session, pc_start_ms=PC_START_MS, crash_tick=None):
     seq = 0x100
     pos = 0
     chunk = 700
+    ps_packets = []
     while pos < len(stream):
         tick = max(t for o, t in ticks if o <= pos)
         part = bytes(stream[pos:pos + chunk])
+        ps_packets.append((len(out), tick))
         out += packet(0xF8, 0xFF, struct.pack("<III", 0, 1000, tick) + bytes(12) + part, seq=seq)
         seq += 1
         pos += chunk
         if seq == 0x102:
             out += packet(0x00, 0x00, b"\nPlatform Version: MOCORTM_TEST\nProject Version:   Fixture_NR_modem\n")
             out += packet(0x05, 0x11, struct.pack("<IIII", 0, pc_start_ms // 1000 + 3, 0, START_TICK + 3000))
-    # a PHY stream that holds nothing readable
+    # a PHY stream that holds nothing readable (its own clock: it is timed by its place in the file)
     out += packet(0xD1, 0x81, struct.pack("<QI", pc_start_ms, 7000))
     for k in range(3):
         out += packet(0xF8, 0xFE, struct.pack("<III", 0, 1000, 7000 + k) + bytes(12) + bytes(range(256)) * 4, seq=0x9000 + k)
-    return bytes(out)
+    if crash:
+        # the other core stops with it, then the modem prints its assert record on its console
+        if crash.get("phy"):
+            out += packet(0xF8, 0xFE, struct.pack("<III", 0, 1000, 7010) + bytes(12) + pad4(trace(crash["phy"])), seq=0x9010)
+        for line in crash["record"].split("\n"):
+            out += packet(0xFF, 0x00, ("\n" + line + "\n").encode())
+        # and sends its memory: the firmware's own message text must not count as crashes
+        firmware = (b"\x78\x56\x34\x12\x01\x00\x00\x00" + bytes(56) + b"psAssert %s\x00Watch Dog Timer Expired.\x00"
+                    b"osa_internal_alloc: Memory allocation Failed\x00SIGABRT: Abnormal termination\x00"
+                    b"Modem Assert: %s %s assert in file %s line %d exp=%s info=[%s]\x00" + bytes(64))
+        for k in range(4):
+            out += packet(0xFF, 0x01, firmware + bytes(range(256)) * 8, seq=0xA000 + k)
+    return bytes(out), ps_packets
 
 
 def dns(qid, name, qtype, response=False, rcode=0, answers=0):
@@ -171,78 +190,167 @@ def clock(ms):
     return f"{t // 3_600_000:02d}:{t // 60_000 % 60:02d}:{t // 1000 % 60:02d}.{t % 1000:03d}"
 
 
-def traceview(lines):
-    """Logel's decoded trace view: NUL-ended lines (.dat) and the TIND index (.pbs):
-    a 0x200 header, then 44 bytes per line with the tick at +12, length at +26, offset at +28."""
+def traceview(lines, ps_packets=()):
+    """Logel's decoded trace view: NUL-ended lines (.dat) and the TIND index (.pbs): a 0x200
+    header, then 44 bytes per line: the .logel packet's sequence number at +4, the tick at +12,
+    length at +26, offset in the .dat at +28 and the .logel packet's offset at +36."""
     dat = bytearray()
     pbs = bytearray(b"TIND" + bytes(0x200 - 4))
     for k, (tick, text) in enumerate(lines):
         raw = text.encode() + b"\x00"
         row = bytearray(44)
+        home = [o for o, t in ps_packets if t <= tick]
         struct.pack_into("<III", row, 0, k, 0x100 + k, k)
         struct.pack_into("<I", row, 12, tick)
         struct.pack_into("<H", row, 26, len(raw))
         struct.pack_into("<Q", row, 28, len(dat))
+        struct.pack_into("<Q", row, 36, home[-1] if home else 0)
         pbs += row
         dat += raw
     return bytes(dat), bytes(pbs)
 
 
-ASS_RECORD = """====================== Modem Assert Information ======================
-Assert Time      : 2026-01-15 {clock}
-SW Version       : MOCORTM_TEST_W26.03.1
-Current Task     : NRRC
-Assert File      : ps/nrrc/src/nrrc_cell_select.c
-Assert Line      : 1187
-Expression       : cell_idx < NRRC_MAX_CELL_NUM
-Assert Info      : invalid cell index 17 while reading SIB1
----------------------- Registers ----------------------
-R0  = 0x00000011  R1  = 0x0000000F  R2  = 0x20A3F1C0  R3  = 0x00000000
-R4  = 0x20A3F000  R5  = 0x00000065  R6  = 0x00000001  R7  = 0x20F01EA0
-SP  = 0x20F01E88  LR  = 0x8043A1D5  PC  = 0x8043A1E2  CPSR = 0x600001D3
----------------------- Call Stack ----------------------
-#0  0x8043A1E2  nrrc_cell_select_handle_sib1 + 0x8E
-#1  0x80439F10  nrrc_cell_select_proc + 0x1C4
-#2  0x80412A04  nrrc_main_task_entry + 0x220
-#3  0x80001B3C  os_thread_entry + 0x30
+def unisoc_record(name, file, line, check, info, task, queue_used=0, dumps=True, corrupt=False):
+    """An assert record in the layout UNISOC modems print (and Logel saves as .ass), made-up values."""
+    out = f""" >
+======================================core0 assert 1=======================================
+
+ >
+Current Version:
+Platform Version: MOCORTM_TEST_W26.03.1_Debug
+Project Version:   Fixture_NR_modem
+BASE  Version:    5G_MODEM_TEST_W26.03.1
+HW Version:        test_modem
+01-15-2026 08:00:00
+
+ >
+File:  {file}
+Line:  {line}
+{check}
+
+ > {info}
+ >
+Current thread info:
+ >
+    \t                ID:               0x2a
+    \t                Name:             {task}
+    \t                Last_Err:         0x0
+    \t                Queue_Name:       Q_{task[4:] if task.startswith("T_P_") else task[2:]}
+    \t                Queue_Total:      100
+    \t                Queue_Used:       {queue_used}
+    \t                Queue_Available:  {100 - queue_used}
+
+ >
+Print R8/R5 PC:
+ >
+NRCP CORE0 PC=(0x93000dec, 0x93000dec, 0x93000dec)
+ >
+PSCP CORE0 PC=(0x8043a1e2, 0x8043a1e6, 0x8043a1ea)
+
+ >
+Current status is SVC, below is the registers before assert:
+ > Current mode:
+ >
+        R0  = 0x00000011    R1   = 0x0000000f
+        R2  = 0x20a3f1c0    R3   = 0x00000000
+        R12 = 0x90860000    R13  = 0x20f01e88
+        R14 = 0x8043a1d5    PC   = 0x8043a1e2
+        SPSR= 0x80000073    CPSR = 0x800000d3
+ > IRQ mode:
+ >
+        R13 = 0x92de9d00    R14  = 0x8ffc849e
+        SPSR = 0x60000073
 """
+    if dumps:
+        out += f"""
+ >
+=============== Dump All Memory To One File==============
+ > ....
+Region name:MODEM_Global, start address=0x88000000, Offset=0x00000000, Length=0x00008000
+ > ....
+Region name:PSCP_LLRAM, start address=0x54100000, Offset=0x00008000, Length=0x00000400
+ >  Saving memory data to file:D:\\LogelLogs\\{name}_armlog\\{name}_1.mem; size: 0x00008456 .
+ >
+Memory Dumping Finished:begin addr=0x88000000,total size=33878Byte(0x8456)
+ >
+=============== Dump G/W/T/L RFIC Register start==============
+ > .... Saving memory data to file:D:\\LogelLogs\\{name}_armlog\\{name}_2.mem; size: 0x00000400 .
+ >
+=============== Dump G/W/T/L RFIC Register finish==============
+"""
+    out += """
+ >
+===============Allocated memory info(in block pool)===============
+ >
+\tNo.      Size     Entity_ID    FileName (Line)
+ >
+\t1        18       ENTITY_USER  threadx_os.c (Line 1331)(addr  0x917240dc )
+ >
+\t2        40       ENTITY_STACK nrrc_cell_select.c (Line 902)(addr  0x917240e0 )
+ >
+\t3        40       ENTITY_STACK nrrc_cell_select.c (Line 902)(addr  0x91724110 )
+ >
+===============Allocated memory info(in byte pool)===============
+ >
+\t1        4106     OSA_ByteHeap threadx_os.c (Line 724)(addr  0x9134d014 )
+"""
+    if corrupt:
+        out += """ >
+memory is corrupted, abnormal termination
+"""
+    return out
 
 
-def armlog_files(name, session=None, pc_start_ms=PC_START_MS, crash=False):
-    """The files Logel saves for one capture; without a session there is no .logel."""
+def armlog_files(name, session=None, pc_start_ms=PC_START_MS, crash=None):
+    """The files Logel saves for one capture; without a session there is no .logel.
+    crash: None, "assert" (a modem fault in NR RRC) or "forced" (an assert asked for by AT command)."""
     empty_pcap = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
     files = {
         f"{name}.cap": build_pcap(pc_start_ms),
         f"{name}_lte.cap": empty_pcap,
+        f"{name}_mux.cap": empty_pcap,
         f"{name}_bt.cap": b"",
         f"{name}.iq": b"",
         f"{name}.lst": b"Start Logging[LittleEndian]\r\nModem Version: TEST_MODEM_1.0\r\nTool Version: R9.0.0.0\r\nStop Logging\r\n",
         f"{name}_modem.ini": b"[Modem Version]\r\nPlatformVersion=MOCORTM_TEST\r\nProjectVersion=Fixture_NR_modem\r\nHWVersion=test_modem\r\n",
-        f"{name}_log_stat.txt": b"[Lost Statistics]\r\nTotal lost=0.00\r\nTotal lost count=0\r\nTotal package=12\r\n",
+        f"{name}_log_stat.txt": b"[Lost Statistics]\r\nPS Total package=12\r\nPS Channel lost count=0\r\nTotal lost=0.00\r\nTotal lost count=0\r\nTotal package=12\r\n",
         f"{name}_lte.csv": b"LTE, SIM ID, UE time, EARFCN(Band), PCID, RSRP, SINR\r\n",
         f"{name}_bookmark.xml": b'<?xml version="1.0" ?>\r\n<Bookmark Version="1.0" BugID="">\r\n    <Summary></Summary>\r\n</Bookmark>\r\n',
         f"{name}/msgview.dat": bytes(4096),
         f"{name}/msgview.pbs": b"MSG " + bytes(1020),
     }
-    if session:
-        last = last_tick(session)
-        crash_tick = last + 450 if crash else None
-        files[f"{name}.logel"] = build_logel(session, pc_start_ms, crash_tick)
-        # Logel's decoded traces: ordinary lines, one that only mentions an assert, and the assert itself
-        lines = [(START_TICK + k * 200, f"NRRC: serving cell pci {101 + k % 2} rsrp -88 dBm") for k in range((last - START_TICK) // 200 + 1)]
-        lines.insert(2, (START_TICK + 300, "NRRC: assert check passed for SIB1 of cell 101"))
-        if crash:
-            lines.append((crash_tick, "NRRC: SCI_ASSERT: file nrrc_cell_select.c, line 1187: cell_idx < NRRC_MAX_CELL_NUM"))
-            lines.append((crash_tick + 2, "OS: modem crash, saving the memory dump"))
-            when = clock(pc_start_ms + crash_tick - START_TICK)
-            files[f"{name}_assert.ass"] = ASS_RECORD.format(clock=when).replace("\n", "\r\n").encode()
-            # a memory dump: binary, with the firmware's own copy of the assert inside
-            junk = bytes((k * 37 + 11) % 251 for k in range(32768))
-            files[f"{name}_modem_dump.mem"] = (b"MDMP\x01\x00" + junk[:9000] + b"\x00Assert File: ps/nrrc/src/nrrc_cell_select.c, Line: 1187\x00"
-                                               + junk[9000:] + b"\x00MOCORTM_TEST_W26.03.1\x00")
-        dat, pbs = traceview(lines)
-        files[f"{name}/traceview.dat"] = dat
-        files[f"{name}/traceview.pbs"] = pbs
+    if not session:
+        return files
+    last = last_tick(session)
+    tick = last + 450
+    when = clock(pc_start_ms + tick - START_TICK)
+    lines = [(START_TICK + k * 200, f"NRRC: serving cell pci {101 + k % 2} rsrp -88 dBm") for k in range((last - START_TICK) // 200 + 1)]
+    lines.insert(2, (START_TICK + 300, "NRRC: assert check passed for SIB1 of cell 101"))
+    spec = None
+    if crash == "assert":
+        record = unisoc_record(name, "nrrc_cell_select.c", 1187, "SCI_ASSERT(cell_idx < NRRC_MAX_CELL_NUM)",
+                               "invalid cell index 17 while reading SIB1", "T_NRRC", queue_used=97, corrupt=True)
+        ps = "Assertion: TXAS_SystemAssert Modem Assert: T_NRRC PS CP assert in file nrrc_cell_select.c line 1187 exp=cell_idx < NRRC_MAX_CELL_NUM info=[invalid cell index 17 while reading SIB1]"
+        spec = {"tick": tick, "record": record, "lines": [ps],
+                "phy": "Assertion: TXAS_SystemAssert Modem Assert:  NR PHY assert in file threadx_assert.c line 6169 exp=0 info=[]"}
+        lines += [(tick, ps), (tick + 2, "OS: modem crash, saving the memory dump")]
+        files[f"{name}.ass"] = record.replace("\n", "\r\n").encode()
+        # the memory dump: a memory image, so the firmware's text is in it, and its list of recent asserts
+        junk = bytes((k * 37 + 11) % 251 for k in range(32768))
+        files[f"{name}_1.mem"] = (b"\x78\x56\x34\x12\x01\x00\x00\x00" + junk[:9000] + b"\x00psAssert %s\x00Watch Dog Timer Expired.\x00Recently 10 Assert Informations:\x00"
+                                  b"Modem Assert: T_NRRC PS CP assert in file nrrc_cell_select.c line 1187 exp=cell_idx < NRRC_MAX_CELL_NUM info=[invalid cell index 17 while reading SIB1]\x00"
+                                  b"Modem Assert:  PS CP assert in file smp.c line 167 exp=0 info=[]\x00" + junk[9000:])
+        files[f"{name}_2.mem"] = b"RFICDEBG\x01\x00\x00\x00" + bytes(1012)
+    elif crash == "forced":
+        record = unisoc_record(name, "atc_basic_cmd.c", 26348, "PASSERT(FALSE)", "Assert by AT+SPATASSERT", "T_P_ATC", dumps=False)
+        ps = "Assertion: TXAS_SystemAssert Modem Assert: T_P_ATC PS CP assert in file atc_basic_cmd.c line 26348 exp=FALSE info=[Assert by AT+SPATASSERT]"
+        spec = {"tick": tick, "record": record, "lines": [ps]}
+        lines += [(tick - 5, "ATC: ATC_RecNewLineSig,link_id:2,sim:0,len:16,line:AT+SPATASSERT=1"), (tick, ps)]
+    logel, ps_packets = build_logel(session, pc_start_ms, spec)
+    files[f"{name}.logel"] = logel
+    dat, pbs = traceview(sorted(lines), ps_packets)
+    files[f"{name}/traceview.dat"] = dat
+    files[f"{name}/traceview.pbs"] = pbs
     return files
 
 
@@ -252,9 +360,9 @@ def main(out_path, multi=False):
     folders = {f"{NAME}_armlog": armlog_files(NAME, sessions["nr-sa-slice-reject"])}
     if multi:
         hour = 3_600_000
-        folders["2026_01_15_10_14_00_000_armlog"] = armlog_files("2026_01_15_10_14_00_000", sessions["nr-sa-pdu-fail"], PC_START_MS + hour)
+        folders["2026_01_15_10_14_00_000_armlog"] = armlog_files("2026_01_15_10_14_00_000", sessions["nr-sa-pdu-fail"], PC_START_MS + hour, crash="forced")
         folders["2026_01_15_11_14_00_000_armlog"] = armlog_files("2026_01_15_11_14_00_000", None, PC_START_MS + 2 * hour)
-        folders["2026_01_15_12_14_00_000_armlog"] = armlog_files("2026_01_15_12_14_00_000", sessions["nr-sa-slice-reject"], PC_START_MS + 3 * hour, crash=True)
+        folders["2026_01_15_12_14_00_000_armlog"] = armlog_files("2026_01_15_12_14_00_000", sessions["nr-sa-slice-reject"], PC_START_MS + 3 * hour, crash="assert")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         for folder, files in folders.items():

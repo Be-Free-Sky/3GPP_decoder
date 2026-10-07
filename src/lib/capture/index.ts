@@ -1,13 +1,14 @@
 /**
- * Open a Logel capture (a zip, a folder, or loose files), pick the files that help
- * troubleshooting, read them and build the capture the engine decodes.
+ * Open a Logel capture (a zip, a folder, or loose files), read every file in it, each with the
+ * reader for its kind, and build the capture the engine decodes. Nothing is left out: a file
+ * this page has no reader for is still searched line by line and described.
  */
 
 import { isZip, listZip, readZipEntry, zipEntryStream } from "./zip";
 import { fmtClock, isLogel, parseLogel, type LogelResult, type RadioSample } from "./logel";
-import { summarizePcap, type IpSummary } from "./pcap";
-import { CRASH_FILE, fileText, looksLikeAssert, parseAssert, printableStrings, scanText, type CrashLine } from "./crash";
-import type { AssertRecord, CrashGroup, CrashInfo } from "@/lib/engine/types";
+import { pcapCount, summarizePcap, type IpSummary } from "./pcap";
+import { CRASH_FILE, assertTitle, dumpKind, fileText, looksLikeAssert, parseAssert, parseCoreAssert, printableStrings, scanText, type CrashLine } from "./crash";
+import type { AssertRecord, CoreAssert, CrashGroup, CrashInfo } from "@/lib/engine/types";
 
 export interface SourceFile {
   path: string;
@@ -75,11 +76,25 @@ function fileSource(f: File, path?: string): SourceFile {
   };
 }
 
-/** A zip's entries; `under` puts them in a folder named after the zip, so several zips stay apart. */
-async function zipSources(f: File, under?: string): Promise<SourceFile[]> {
-  const entries = await listZip(f);
+/** A zip's entries; `under` puts them in a folder named after the zip, so several zips stay apart.
+ *  Zips inside it are opened too (up to 1 GB each, three levels deep), so every file is read. */
+async function zipSources(blob: Blob, under?: string, depth = 0): Promise<SourceFile[]> {
+  const entries = await listZip(blob);
   const prefix = under ? `${under}/` : "";
-  return entries.map((e) => ({ path: prefix + e.path, name: e.name, size: e.size, read: () => readZipEntry(f, e), stream: () => zipEntryStream(f, e) }));
+  const out: SourceFile[] = [];
+  for (const e of entries) {
+    if (depth < 3 && /\.zip$/i.test(e.name) && e.size > 0 && e.size <= 1024 * MB && !e.encrypted) {
+      try {
+        const inner = new Blob([(await readZipEntry(blob, e)) as Uint8Array<ArrayBuffer>]);
+        out.push(...(await zipSources(inner, prefix + e.path.replace(/\.zip$/i, ""), depth + 1)));
+        continue;
+      } catch {
+        /* not a zip after all: list it as it is */
+      }
+    }
+    out.push({ path: prefix + e.path, name: e.name, size: e.size, read: () => readZipEntry(blob, e), stream: () => zipEntryStream(blob, e) });
+  }
+  return out;
 }
 
 export interface PickedFile {
@@ -199,40 +214,45 @@ export function filesFromDrop(dt: DataTransfer): Promise<{ picked: PickedFile[];
 
 // --- what each file is ------------------------------------------------------------
 
+type Kind =
+  | "logel" | "ass" | "tracedat" | "traceidx" | "cache" | "pcap" | "pcapng" | "csv" | "lst" | "ini" | "stat" | "bookmark"
+  | "iq" | "media" | "chiptrace" | "dump" | "crash" | "text" | "zip";
+
 interface Rule {
   test: RegExp;
-  role: FileRole | "check";
+  kind: Kind;
   label: string;
-  reason: string;
+  /** what the file holds when the tool writes to it */
+  holds: string;
 }
 
-const SEARCHED = "Searched line by line for asserts, crashes, exceptions and resets.";
-
 const RULES: Rule[] = [
-  { test: /\.logel$/i, role: "analysed", label: "Modem log (Logel)", reason: "Every RRC and NAS message, the modem's radio measurements, its AT command answers, and every assert or crash line." },
-  { test: /\.ass$/i, role: "analysed", label: "Modem assert record", reason: "Written when the modem asserts: where and why it stopped, the task, registers and call stack." },
-  { test: /(^|\/)(traceview|phytraceview)\.dat$/i, role: "info", label: "Logel decoded traces", reason: `Logel's decoded copy of every modem trace, the PHY traces too (the .logel keeps them as numbers). ${SEARCHED}` },
-  { test: /(^|\/)(traceview|phytraceview)\.pbs$/i, role: "info", label: "Trace index", reason: "Time and place of every decoded trace line: used to time any assert found in the decoded traces." },
-  { test: /(^|\/)(msgview|msgflowview|phyparamchart)\.(dat|pbs)$/i, role: "info", label: "Logel view cache", reason: `Logel's display cache, built from the .logel. ${SEARCHED}` },
-  { test: /_(bt|wcn)\.cap$/i, role: "info", label: "Bluetooth / Wi-Fi chip packets", reason: `Packets of the connectivity chip, not the cellular modem. ${SEARCHED}` },
-  { test: /_mux\.cap$/i, role: "info", label: "AT channel packets", reason: `Raw AT channel traffic; the AT answers are read from the .logel. ${SEARCHED}` },
-  { test: /\.(cap|pcap)$/i, role: "check", label: "IP packets", reason: "Data traffic of the modem: DNS lookups, their answers and failures." },
-  { test: /\.pcapng$/i, role: "info", label: "IP packets (pcapng)", reason: `pcapng is not decoded yet. ${SEARCHED}` },
-  { test: /_(lte|nr|5g|gsm|wcdma|td)\.csv$/i, role: "check", label: "Signal measurements", reason: "RSRP / SINR samples exported by Logel." },
-  { test: /\.lst$/i, role: "info", label: "Log record", reason: "Modem software and Logel tool versions." },
-  { test: /_modem\.ini$/i, role: "info", label: "Modem version", reason: "Platform, project, hardware and build time of the modem software." },
-  { test: /_log_stat\.txt$/i, role: "info", label: "Lost-packet statistics", reason: "Shows whether the log is complete. Lost packets mean missing messages." },
-  { test: /_bookmark\.xml$/i, role: "check", label: "Bookmarks", reason: "Bug ID and notes added in Logel." },
-  { test: /\.iq$/i, role: "skipped", label: "IQ samples", reason: "Raw radio samples for lab analysis: numbers only, no signalling or text to search." },
-  { test: /(\.wvoice|_vt_(up|down)\.bin)$/i, role: "skipped", label: "Call media", reason: "Voice or video call payload: no signalling or text to search." },
-  { test: /(\.xdsp_log|_wcn_dsp\.org|_dsp_ag_trace\.txt)$/i, role: "info", label: "DSP trace", reason: `Chip trace in UNISOC's own format. ${SEARCHED}` },
-  { test: /\.wrrc_log$/i, role: "info", label: "WCDMA RRC trace", reason: `3G RRC trace; signalling is read from the .logel. ${SEARCHED}` },
-  { test: /_ipa_des\.bin$/i, role: "info", label: "IP accelerator data", reason: `Internal modem buffers. ${SEARCHED}` },
-  { test: CRASH_FILE, role: "analysed", label: "Crash evidence", reason: "Saved only when something crashed: read for the assert or exception it records." },
-  { test: /_trace\.txt$/i, role: "check", label: "Text trace", reason: "Trace lines exported as text." },
-  { test: /\.(txt|log|hex|csv)$/i, role: "check", label: "Text export", reason: "Hex messages exported as text." },
-  { test: /\.zip$/i, role: "skipped", label: "Archive inside the archive", reason: "Unzip it and open it on its own." },
+  { test: /\.logel$/i, kind: "logel", label: "Modem log (Logel)", holds: "Every RRC and NAS message, the modem's radio measurements, its AT answers, its traces and, after an assert, what the modem printed and its memory." },
+  { test: /\.ass$/i, kind: "ass", label: "Modem assert record", holds: "What the modem printed when it asserted: where and why it stopped, the task, registers, the files it saved and its memory use." },
+  { test: /^(traceview|phytraceview)\.dat$/i, kind: "tracedat", label: "Logel decoded traces", holds: "Logel's decoded text of every modem trace, the PHY traces too (the .logel keeps them as numbers)." },
+  { test: /^(traceview|phytraceview)\.pbs$/i, kind: "traceidx", label: "Trace index", holds: "Where and when each decoded trace line was logged: used to time every line found in the decoded traces." },
+  { test: /^(msgview|msgflowview|phyparamchart)\.(dat|pbs)$/i, kind: "cache", label: "Logel view cache", holds: "Logel's display cache (message list, flow and PHY charts), built from the .logel." },
+  { test: /_mux\.cap$/i, kind: "pcap", label: "AT channel packets", holds: "The AT commands and answers between the host and the modem." },
+  { test: /_(bt|wcn)\.cap$/i, kind: "pcap", label: "Bluetooth / Wi-Fi chip packets", holds: "Packets of the connectivity chip." },
+  { test: /\.(cap|pcap)$/i, kind: "pcap", label: "IP packets", holds: "Data traffic of the modem: DNS lookups, their answers and failures." },
+  { test: /\.pcapng$/i, kind: "pcapng", label: "IP packets (pcapng)", holds: "Data traffic in the pcapng format." },
+  { test: /_(lte|nr|5g|gsm|wcdma|td|c2k|cdma)\.csv$/i, kind: "csv", label: "Signal measurements", holds: "Serving cell measurements Logel exported (RSRP / RSCP / RSSI, SINR / SNR)." },
+  { test: /\.lst$/i, kind: "lst", label: "Log record", holds: "Modem and Logel versions, and what happened to the device while logging." },
+  { test: /_modem\.ini$/i, kind: "ini", label: "Modem version", holds: "Platform, project, hardware and build time of the modem software." },
+  { test: /_log_stat\.txt$/i, kind: "stat", label: "Lost-packet statistics", holds: "Packets logged and lost, for the protocol stack and the PHY: lost packets mean missing messages." },
+  { test: /_bookmark\.xml$/i, kind: "bookmark", label: "Bookmarks", holds: "Bug ID, notes and bookmarks added in Logel." },
+  { test: /(^|_)w?\.iq$|\.iq$/i, kind: "iq", label: "IQ samples", holds: "Raw radio samples for lab analysis." },
+  { test: /(\.wvoice|_vt_(up|down)\.bin)$/i, kind: "media", label: "Call media", holds: "Voice or video call payload." },
+  { test: /(\.xdsp_log|_wcn_dsp\.org|_dsp_ag_trace\.txt)$/i, kind: "chiptrace", label: "DSP trace", holds: "Trace of the DSP or the connectivity chip, in UNISOC's own format." },
+  { test: /\.wrrc_log$/i, kind: "chiptrace", label: "WCDMA RRC trace", holds: "3G RRC trace." },
+  { test: /_ipa_des\.bin$/i, kind: "chiptrace", label: "IP accelerator data", holds: "The modem's IP accelerator buffers." },
+  { test: /\.(?:dmp|mdmp|core|mem)$|dump/i, kind: "dump", label: "Memory dump", holds: "Saved when the modem asserts: its memory or its radio chip's registers." },
+  { test: CRASH_FILE, kind: "crash", label: "Crash evidence", holds: "Written when something crashed." },
+  { test: /\.zip$/i, kind: "zip", label: "Archive", holds: "More files, zipped." },
+  { test: /\.(txt|log|hex|csv|xml|ini|json)$/i, kind: "text", label: "Text file", holds: "Text: trace lines, settings or hex messages." },
 ];
+
+const OTHER: Rule = { test: /./, kind: "text", label: "Other file", holds: "A file this page has no reader of its own for." };
 
 const HEX_LINE = /(?:^|[\s:])(?:[0-9a-f]{2}[ ,]){7,}[0-9a-f]{2}/im;
 
@@ -246,29 +266,36 @@ function parseIni(text: string, device: Record<string, string>) {
   const map: Record<string, string> = {
     platformversion: "platform", projectversion: "project", baseversion: "modem", hwversion: "hw", buildtime: "build",
   };
+  const got: string[] = [];
   for (const line of text.split(/\r?\n/)) {
     const m = /^\s*([A-Za-z ]+?)\s*[=:]\s*(.+?)\s*$/.exec(line);
     if (!m) continue;
+    got.push(`${m[1].trim()} ${m[2]}`);
     const k = map[m[1].replace(/\s+/g, "").toLowerCase()];
     if (k && !device[k]) device[k] = m[2];
   }
+  return got;
 }
 
+/** Versions, and the events Logel wrote between Start and Stop Logging ("Device is plugged out"). */
 function parseLst(text: string, device: Record<string, string>) {
-  const modem = /Modem Version:\s*(\S+)/i.exec(text);
-  const tool = /Tool Version:\s*(\S+)/i.exec(text);
+  const modem = /Modem Version:[ \t]*(\S+)/i.exec(text);
+  const tool = /Tool Version:[ \t]*(\S+)/i.exec(text);
+  const parser = /ParserLib Version:[ \t]*(\S+)/i.exec(text);
   if (modem && !device.modem) device.modem = modem[1];
   if (tool) device.tool = tool[1];
+  const events = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^(Start|Stop) Logging|Version:/i.test(l));
+  return { modem: modem?.[1], tool: tool?.[1], parser: parser?.[1], events, stopped: /Stop Logging/i.test(text) };
 }
 
 function parseStats(text: string) {
-  const num = (k: string) => {
-    const m = new RegExp(`^${k}=([\\d.]+)`, "mi").exec(text);
-    return m ? Number(m[1]) : undefined;
-  };
-  const lostCount = num("Total lost count") ?? 0;
-  const lostPercent = num("Total lost");
-  return { lostCount, lostPercent: lostPercent || undefined, totalPackets: num("Total package") };
+  const all: Record<string, number> = {};
+  for (const m of text.matchAll(/^\s*([^=[\]\r\n]+?)\s*=\s*([\d.]+)\s*$/gm)) all[m[1].trim()] = Number(m[2]);
+  const lostCount = all["Total lost count"] ?? 0;
+  return { lostCount, lostPercent: all["Total lost"] || undefined, totalPackets: all["Total package"], all };
 }
 
 function parseMeasCsv(text: string): RadioSample[] {
@@ -293,10 +320,9 @@ function parseMeasCsv(text: string): RadioSample[] {
   return out;
 }
 
-// --- read the capture -------------------------------------------------------------
+// --- searching ------------------------------------------------------------------------
 
 const IN_MEMORY = 48 * MB;
-const DUMP = /\.(?:dmp|mdmp|core|mem)$|dump/i;
 
 /** Crash lines in bytes held in memory (text files, binaries, UTF-16). */
 function scanBytes(data: Uint8Array, name: string): CrashLine[] {
@@ -317,7 +343,7 @@ function scanBytes(data: Uint8Array, name: string): CrashLine[] {
   return out;
 }
 
-/** Crash lines in a file read chunk by chunk (Logel's 300 MB+ decoded trace view, dumps). */
+/** Crash lines in a file read chunk by chunk (Logel's 400 MB decoded traces, memory dumps). */
 async function scanStream(f: SourceFile, progress: (done: number) => void): Promise<CrashLine[]> {
   const reader = (await f.stream()).getReader();
   const dec = new TextDecoder("latin1");
@@ -327,8 +353,7 @@ async function scanStream(f: SourceFile, progress: (done: number) => void): Prom
   let pos = 0; // file offset of the first pending byte
   let carry = "";
   let lastEnd = -1;
-  const flush = (final: boolean) => {
-    if (!pendingSize && !final) return;
+  const flush = () => {
     const buf = new Uint8Array(pendingSize);
     let at = 0;
     for (const c of pending) {
@@ -353,22 +378,24 @@ async function scanStream(f: SourceFile, progress: (done: number) => void): Prom
     pending.push(value);
     pendingSize += value.length;
     if (pendingSize >= 16 * MB) {
-      flush(false);
+      flush();
       progress(pos);
       await new Promise((r) => setTimeout(r, 0));
-      if (out.length > 5000) break;
+      if (out.length > 20000) break;
     }
   }
-  flush(true);
+  flush();
   return out;
 }
 
 /**
- * Time trace view lines with Logel's index (traceview.pbs): a "TIND" header, then from 0x200
- * one 44-byte row per line: tick at +12, length at +26, offset in the .dat at +28.
+ * Time decoded trace lines with Logel's index (traceview.pbs): a "TIND" header, then from 0x200
+ * one 44-byte row per line: the .logel packet's sequence number at +4, the line's tick at +12,
+ * its length at +26, its offset in the .dat at +28 and the .logel packet's offset at +36. The
+ * packet offset gives the line the same clock as everything read from the .logel.
  */
-async function timeTraceLines(pbs: SourceFile, hits: CrashLine[], base: number | null) {
-  if (!hits.length || base === null) return;
+async function timeTraceLines(pbs: SourceFile, hits: CrashLine[], clock: ((offset: number, tick?: number) => number | null) | null, base: number | null) {
+  if (!hits.length) return;
   const sorted = [...hits].sort((a, b) => a.offset - b.offset);
   const offs = sorted.map((h) => h.offset);
   const reader = (await pbs.stream()).getReader();
@@ -403,7 +430,10 @@ async function timeTraceLines(pbs: SourceFile, hits: CrashLine[], base: number |
       }
       for (let k = lo; k < offs.length && offs[k] <= at + Math.max(len, 1) - 1; k++) {
         if (sorted[k].ts) continue;
-        sorted[k].ts = fmtClock(base + dv.getUint32(i + 12, true));
+        const packet = dv.getUint32(i + 36, true) + dv.getUint32(i + 40, true) * 2 ** 32;
+        const tick = dv.getUint32(i + 12, true);
+        const ms = clock?.(packet, tick) ?? (base !== null ? base + tick : null);
+        sorted[k].ts = ms !== null ? fmtClock(ms) : null;
         left--;
       }
       if (!left) return;
@@ -416,25 +446,34 @@ async function timeTraceLines(pbs: SourceFile, hits: CrashLine[], base: number |
 
 /** What an assert record gave, for the Files list. */
 function recordFields(r: AssertRecord) {
+  const mem = r.memory;
   const got = [
-    r.source && "where",
-    r.expression && "the failed check",
-    r.message && "the message",
+    r.source && "where it stopped",
+    r.expression && "the check",
+    r.message && "the assert info",
     r.task && "the task",
+    r.thread?.length && "its queue and stack",
     r.exception && "the exception",
-    r.ts && "the time",
-    r.version && "the software version",
+    r.versions?.length && "the software versions",
     r.registers.length && `${r.registers.length} registers`,
+    r.banked?.length && `the registers of ${r.banked.length} CPU modes`,
+    r.corePcs?.length && `the PC of ${r.corePcs.length} cores`,
     r.stack.length && `${r.stack.length} call stack frames`,
+    r.dumps?.length && `${r.dumps.length} saved files`,
+    r.regions?.length && `${r.regions.length} memory regions`,
+    mem?.blockPool && `${mem.blockPool.entries} block-pool allocations`,
+    mem?.bytePool && `${mem.bytePool.entries} byte-pool allocations`,
+    mem?.initialized && `${mem.initialized.entries} initialised-memory allocations`,
   ].filter(Boolean) as string[];
   return got.length ? got.join(", ") : "no known field (the whole text is kept)";
 }
 
+const groupKey = (l: CrashLine) => `${l.kind}|${l.text.replace(/0x[0-9a-f]+/gi, "0x_").replace(/\d+/g, "#").replace(/\s+/g, " ").trim().toLowerCase()}`;
+
 function groupLines(lines: CrashLine[]): CrashGroup[] {
   const by = new Map<string, CrashGroup>();
   for (const l of lines) {
-    const norm = l.text.replace(/0x[0-9a-f]+/gi, "0x_").replace(/\d+/g, "#").replace(/\s+/g, " ").trim().toLowerCase();
-    const key = `${l.kind}|${norm}`;
+    const key = groupKey(l);
     let g = by.get(key);
     if (!g) {
       g = { kind: l.kind, strong: l.strong, text: l.text, files: {}, count: 0, first: l.ts ?? null, last: l.ts ?? null };
@@ -451,6 +490,11 @@ function groupLines(lines: CrashLine[]): CrashGroup[] {
   return [...by.values()].sort((a, b) => Number(b.strong) - Number(a.strong) || (a.first ?? "~").localeCompare(b.first ?? "~") || b.count - a.count).slice(0, 400);
 }
 
+const msOf = (ts?: string | null) => {
+  const m = /(\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d{1,3}))?$/.exec(ts ?? "");
+  return m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + Number((m[4] ?? "0").padEnd(3, "0")) : null;
+};
+
 export async function prepareCapture(src: CaptureSource, onStep: (text: string) => void): Promise<Prepared> {
   const files: CaptureFile[] = [];
   const device: Record<string, string> = {};
@@ -459,14 +503,16 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
   const radio: RadioSample[] = [];
   const at: Capture["at"] = [];
   let stats: Capture["stats"];
-  let ip: IpSummary | undefined;
+  const ips: IpSummary[] = [];
   let span: Capture["span"];
   const texts: string[] = [];
   const hasLogel = src.files.some((f) => /\.logel$/i.test(f.name) && f.size > 0);
   const crashLines: CrashLine[] = [];
   const events: AssertRecord[] = [];
+  const history: CoreAssert[] = [];
   const searched: string[] = [];
   let base: LogelResult["base"] = { ps: null, phy: null };
+  let clock: ((offset: number, tick?: number) => number | null) | null = null;
 
   const add = (f: SourceFile, role: FileRole, label: string, reason: string, detail?: string) =>
     files.push({ path: f.path, name: f.name, size: f.size, role, label, reason, detail });
@@ -482,33 +528,26 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
     if (data) return scanBytes(data, f.name);
     return scanStream(f, (done) => onStep(`Searching ${f.name} for asserts and crashes (${sizeText(done)} of ${sizeText(f.size)})`));
   };
+  const sentences = (...xs: (string | null | undefined | false)[]) => xs.filter(Boolean).join(" ");
 
   // the .logel first: its clock dates every other file; then small files before large ones
   const order = [...src.files].sort((a, b) => Number(!/\.logel$/i.test(a.name)) - Number(!/\.logel$/i.test(b.name)) || a.size - b.size);
   const traceHits: { f: SourceFile; hits: CrashLine[] }[] = [];
+  const dumpFiles: { f: SourceFile; what: string }[] = [];
   for (const f of order) {
-    const rule = RULES.find((r) => r.test.test(f.name)) ?? {
-      test: /./,
-      role: "info" as FileRole,
-      label: "Other file",
-      reason: `No reader of its own. ${SEARCHED}`,
-    };
+    const rule = RULES.find((r) => r.test.test(f.name)) ?? OTHER;
     if (f.size === 0) {
-      add(f, "skipped", rule.label, "Empty: the tool created it but nothing was logged to it.");
-      continue;
-    }
-    if (rule.role === "skipped") {
-      add(f, "skipped", rule.label, rule.reason);
+      add(f, "skipped", rule.label, `Empty (0 bytes): nothing was logged to it. When used it holds: ${rule.holds.charAt(0).toLowerCase()}${rule.holds.slice(1)}`);
       continue;
     }
     try {
-      if (/\.logel$/i.test(f.name)) {
+      if (rule.kind === "logel") {
         onStep(`Reading ${f.name} (${sizeText(f.size)})`);
         const data = await f.read();
         if (!isLogel(data.subarray(0, 64))) {
           const hits = await search(f, data);
           crashLines.push(...hits);
-          add(f, "info", rule.label, "Not in the Logel format this page reads (UNISOC armlog).", found(hits));
+          add(f, "analysed", rule.label, "Not in the Logel format this page reads (UNISOC armlog); searched as a binary file.", found(hits));
           continue;
         }
         onStep(`Finding RRC and NAS messages, asserts and crashes in ${f.name}`);
@@ -520,104 +559,191 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
         at.push(...res.at);
         crashLines.push(...res.crash);
         if (res.base.ps !== null) base = res.base;
+        clock = res.timeAt;
         Object.entries(res.device).forEach(([k, v]) => (device[k] ??= v));
-        span = { date: res.date, start: res.start, end: res.end };
+        if (res.date || res.start) span = { date: res.date, start: res.start, end: res.end };
         if (res.truncated) notes.push(`${f.name} ends part way through a packet: the log may have been cut short.`);
+        // what the modem printed at its assert console is an assert record of its own
+        let consoleNote: string | null = null;
+        if (res.console) {
+          const name = `${f.name} (assert console)`;
+          if (looksLikeAssert(res.console.text)) {
+            const rec = parseAssert(res.console.text, name);
+            rec.ts ??= res.console.ms !== null ? fmtClock(res.console.ms) : null;
+            events.push(rec);
+            consoleNote = `It also holds the modem's assert console (${res.console.packets} packets), read as an assert record: ${rec.title}.`;
+          } else {
+            const hits = scanText(res.console.text, name);
+            crashLines.push(...hits);
+            consoleNote = `It also holds ${res.console.packets} packets of modem console output; ${found(hits).replace(/^Searched: /, "searched: ")}`;
+          }
+        }
+        let dumpNote: string | null = null;
+        if (res.dump) {
+          const kind = dumpKind(res.dump.head);
+          dumpNote = `${sizeText(res.dump.bytes)} of it is the ${kind ? kind.what.toLowerCase() : "memory dump"} the modem sent after the assert (${res.dump.packets} packets): firmware memory, so its text is not counted as crash lines.`;
+        }
         const bits = [
           `${res.records.length} RRC and NAS ${res.records.length === 1 ? "message" : "messages"}`,
           res.at.length ? `${res.at.length} AT answers` : null,
           res.radio.length ? `${res.radio.length} radio samples` : null,
+          `${res.packets} packets in ${res.streams} trace ${res.streams === 1 ? "stream" : "streams"}`,
         ].filter(Boolean);
-        add(f, "analysed", rule.label, rule.reason, `${bits.join(", ")}. ${res.internal} internal modem messages left out. ${found(res.crash)}`);
+        add(f, "analysed", rule.label, rule.holds, sentences(`${bits.join(", ")}.`, res.internal ? `${res.internal} internal modem messages left out.` : null, consoleNote, dumpNote, found(res.crash)));
         continue;
       }
-      if (rule.label === "Trace index") {
-        add(f, "info", rule.label, rule.reason);
-        continue;
-      }
-      if (rule.label === "Modem assert record" || rule.label === "Crash evidence") {
-        onStep(`Reading the crash record ${f.name}`);
-        const isDump = DUMP.test(f.name);
+
+      if (rule.kind === "ass" || rule.kind === "crash") {
+        onStep(`Reading the assert record ${f.name}`);
         const data = f.size <= IN_MEMORY ? await f.read() : undefined;
-        const hits = await search(f, data);
-        const text = data ? fileText(data, isDump ? 4 * MB : data.length).text : hits.map((h) => h.text).join("\n");
-        if (rule.label === "Modem assert record" || looksLikeAssert(text) || hits.some((h) => h.strong)) {
+        const text = data ? fileText(data, data.length).text : "";
+        if (rule.kind === "ass" || looksLikeAssert(text)) {
           // the record is the event: its own lines are not counted again as crash lines
-          const rec = parseAssert(text || (data ? printableStrings(data.subarray(0, 4 * MB)) : ""), f.name, { fromDump: isDump });
+          searched.push(f.name);
+          const rec = parseAssert(text || (data ? printableStrings(data.subarray(0, 4 * MB)) : ""), f.name);
           events.push(rec);
-          add(f, "analysed", rule.label, rule.reason, `${rec.title}${rec.ts ? ` at ${rec.ts}` : ""}. Read field by field: ${recordFields(rec)}.`);
-        } else if (isDump) {
-          crashLines.push(...hits);
-          events.push({ file: f.name, kind: "reset", title: "Modem memory dump saved", registers: [], stack: [], raw: "", fromDump: true });
-          add(f, "analysed", "Memory dump", "The modem saves one when it crashes (or when one is taken by hand). Its contents need UNISOC's tools; its text is searched.", found(hits));
+          add(f, "analysed", rule.label, rule.holds, `${rec.title}. Read in full: ${recordFields(rec)}.${rec.memory?.cutShort ? ` ${rec.memory.cutShort}` : ""}`);
         } else {
-          // named like crash output, but nothing in it shows one
+          const hits = await search(f, data);
           crashLines.push(...hits);
-          add(f, "info", "Other file", `Named like crash output, but it records no assert or crash. ${SEARCHED}`, found(hits));
+          add(f, "analysed", rule.label, `${rule.holds} This one records no assert.`, found(hits));
         }
         continue;
       }
+
+      if (rule.kind === "dump") {
+        onStep(`Reading the memory dump ${f.name} (${sizeText(f.size)})`);
+        const head = new Uint8Array(await new Response((await f.stream()).pipeThrough(firstBytes(64))).arrayBuffer());
+        const kind = dumpKind(head);
+        const data = f.size <= IN_MEMORY ? await f.read() : undefined;
+        const hits = await search(f, data);
+        // a memory image holds the firmware's message text: only finished assert lines count, as history
+        const asserts = hits.map((h) => parseCoreAssert(h.text, f.name)).filter((x): x is CoreAssert => Boolean(x));
+        history.push(...asserts);
+        const firmware = hits.length - asserts.length;
+        dumpFiles.push({ f, what: kind?.what ?? "Memory dump" });
+        add(
+          f,
+          "analysed",
+          kind?.what ?? rule.label,
+          kind?.detail ?? rule.holds,
+          sentences(
+            `Searched in full: ${asserts.length ? `${asserts.length} finished assert ${asserts.length === 1 ? "line" : "lines"} kept in memory (listed with the assert)` : "no finished assert line in it"}.`,
+            firmware ? `${firmware} firmware ${firmware === 1 ? "message mentions" : "messages mention"} an assert or a failure: the firmware's own text, not events.` : null,
+          ),
+        );
+        continue;
+      }
+
+      if (rule.kind === "traceidx") {
+        const rows = Math.max(0, Math.floor((f.size - 0x200) / 44));
+        searched.push(f.name);
+        add(f, "analysed", rule.label, rule.holds, `Index of ${rows.toLocaleString("en")} decoded trace lines; used to time the lines found in ${f.name.replace(/\.pbs$/i, ".dat")}.`);
+        continue;
+      }
+
       const big = f.size > IN_MEMORY;
       const data = big ? undefined : await f.read();
-      if (rule.label === "Logel decoded traces" || big || !data) {
+      if (rule.kind === "tracedat" || !data) {
         onStep(`Searching ${f.name} for asserts and crashes`);
         const hits = await search(f, data);
         crashLines.push(...hits);
-        if (rule.label === "Logel decoded traces") traceHits.push({ f, hits });
-        add(f, rule.role === "check" ? "info" : (rule.role as FileRole), rule.label, rule.reason, found(hits));
+        if (rule.kind === "tracedat") traceHits.push({ f, hits });
+        add(f, "analysed", rule.label, rule.holds, found(hits));
         continue;
       }
       const hits = await search(f, data);
       crashLines.push(...hits);
       const scanNote = found(hits);
-      if (rule.label === "IP packets") {
+
+      if (rule.kind === "pcap") {
         const s = summarizePcap(data);
-        if (!s) add(f, "info", rule.label, "Not a pcap file this page reads.", scanNote);
-        else if (!s.packets) add(f, "skipped", rule.label, "Empty: no packets were captured.");
-        else {
-          if (!ip || s.packets > ip.packets) ip = s;
-          add(f, "analysed", rule.label, rule.reason,
-            `${s.packets} packets (${s.ul} up, ${s.dl} down), ${s.dns.length} DNS ${s.dns.length === 1 ? "lookup" : "lookups"}. ${scanNote}`);
+        const n = pcapCount(data);
+        if (!n) add(f, "analysed", rule.label, `${rule.holds} This one is not a pcap file; searched as a binary file.`, scanNote);
+        else if (!n.total) add(f, "analysed", rule.label, rule.holds, `No packets: only the file header was written. ${scanNote}`);
+        else if (s && s.packets && rule.label === "IP packets") {
+          ips.push(s);
+          add(f, "analysed", rule.label, rule.holds, `${s.packets} IP packets (${s.ul} up, ${s.dl} down), ${s.dns.length} DNS ${s.dns.length === 1 ? "lookup" : "lookups"}. ${scanNote}`);
+        } else {
+          const cmds = [...new Set([...textOf(data).matchAll(/AT[+^$%][A-Z0-9]+[^\r\n\0]{0,40}/gi)].map((m) => m[0].trim()))];
+          add(f, "analysed", rule.label, rule.holds, sentences(`${n.total} packets (link type ${n.link}).`, cmds.length ? `AT commands in it: ${cmds.slice(0, 12).join(", ")}${cmds.length > 12 ? ` and ${cmds.length - 12} more` : ""}.` : null, scanNote));
         }
         continue;
       }
       const text = textOf(data);
-      if (rule.label === "Signal measurements") {
+      if (rule.kind === "csv") {
         const pts = parseMeasCsv(text);
-        if (!pts.length) add(f, "skipped", rule.label, "Only the column titles: the modem logged no measurements here.");
-        else {
-          radio.push(...pts);
-          add(f, "analysed", rule.label, rule.reason, `${pts.length} samples. ${scanNote}`);
-        }
+        const rows = text.split(/\r?\n/).filter((l) => l.trim()).length - 1;
+        if (pts.length) radio.push(...pts);
+        add(
+          f,
+          "analysed",
+          rule.label,
+          rule.holds,
+          pts.length ? `${pts.length} samples. ${scanNote}` : rows > 0 ? `${rows} rows (2G / 3G values, not charted). ${scanNote}` : `Only the column titles: the modem logged no ${/^(\w+),/.exec(text)?.[1] ?? ""} measurements. ${scanNote}`,
+        );
         continue;
       }
-      if (rule.label === "Bookmarks") {
+      if (rule.kind === "lst") {
+        const l = parseLst(text, device);
+        for (const e of l.events) notes.push(`Logel recorded: ${e}.`);
+        add(
+          f,
+          "analysed",
+          rule.label,
+          rule.holds,
+          sentences(
+            [l.modem && `Modem ${l.modem}`, l.parser && `parser ${l.parser}`, l.tool && `Logel ${l.tool}`].filter(Boolean).join(", ") + ".",
+            l.events.length ? `While logging: ${l.events.join("; ")}.` : null,
+            l.stopped ? null : "No Stop Logging line: Logel did not finish this log normally.",
+            hits.length ? scanNote : null,
+          ),
+        );
+        continue;
+      }
+      if (rule.kind === "ini") {
+        const got = parseIni(text, device);
+        add(f, "analysed", rule.label, rule.holds, got.length ? `${got.join(", ")}.` : "No version lines in it.");
+        continue;
+      }
+      if (rule.kind === "stat") {
+        const s = parseStats(text);
+        stats = { lostCount: s.lostCount, lostPercent: s.lostPercent, totalPackets: s.totalPackets };
+        const a = s.all;
+        add(
+          f,
+          "analysed",
+          rule.label,
+          rule.holds,
+          sentences(
+            a["PS Total package"] !== undefined ? `Protocol stack: ${a["PS Total package"].toLocaleString("en")} packets, ${a["PS Channel lost count"] ?? 0} lost on the channel, ${a["PS MTA lost count"] ?? 0} lost in the modem.` : null,
+            a["PHY Total package"] !== undefined ? `PHY: ${a["PHY Total package"].toLocaleString("en")} packets, ${a["PHY CP lost count"] ?? 0} lost in the modem, ${a["PHY Channel lost count"] ?? 0} on the channel.` : null,
+            `In all ${s.totalPackets?.toLocaleString("en") ?? "?"} packets, ${s.lostCount} lost${s.lostPercent ? ` (${s.lostPercent}%)` : ""}.`,
+          ),
+        );
+        continue;
+      }
+      if (rule.kind === "bookmark") {
         const bug = /BugID="([^"]*)"/.exec(text)?.[1];
         const sum = /<Summary>([\s\S]*?)<\/Summary>/.exec(text)?.[1]?.trim();
         const marks = (text.match(/<(Item|Bookmark\w+|Mark)\b/g) || []).length;
-        if (!bug && !sum && !marks) add(f, "skipped", rule.label, "No bookmarks or bug notes were added.");
-        else {
-          if (bug) device.bug = bug;
-          if (sum) notes.push(`Logel note: ${sum}`);
-          add(f, "info", rule.label, rule.reason, [bug && `Bug ${bug}`, sum].filter(Boolean).join(". "));
-        }
-        continue;
-      }
-      if (rule.role === "info") {
-        if (/\.lst$/i.test(f.name)) parseLst(text, device);
-        else if (/_modem\.ini$/i.test(f.name)) parseIni(text, device);
-        else if (/_log_stat\.txt$/i.test(f.name)) stats = parseStats(text);
-        add(f, "info", rule.label, rule.reason, hits.length ? scanNote : undefined);
+        if (bug) device.bug = bug;
+        if (sum) notes.push(`Logel note: ${sum}`);
+        add(f, "analysed", rule.label, rule.holds, bug || sum || marks ? [bug && `Bug ${bug}`, sum, marks && `${marks} bookmarks`].filter(Boolean).join(". ") : "No bookmarks or bug notes were added.");
         continue;
       }
       // text exports: decode them only when there is no .logel (it holds the same messages)
-      if (HEX_LINE.test(text)) {
-        if (hasLogel) add(f, "info", rule.label, "The .logel already holds these messages.", scanNote);
+      const isText = !fileText(data, Math.min(data.length, 65536)).binary;
+      if (isText && HEX_LINE.test(text)) {
+        if (hasLogel) add(f, "analysed", rule.label, rule.holds, `Hex messages, the same ones the .logel holds. ${scanNote}`);
         else {
           texts.push(text);
-          add(f, "analysed", rule.label, rule.reason, scanNote);
+          add(f, "analysed", rule.label, rule.holds, `Hex messages: decoded with the rest. ${scanNote}`);
         }
-      } else add(f, "info", rule.label, `No hex messages in it. ${SEARCHED}`, scanNote);
+        continue;
+      }
+      const lines = isText ? text.split(/\r?\n/).filter((l) => l.trim()).length : 0;
+      add(f, "analysed", rule.label, rule.holds, sentences(isText ? `Text, ${lines.toLocaleString("en")} lines.` : "Binary data.", scanNote));
     } catch (e) {
       add(f, "skipped", rule.label, `Could not be read: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -631,24 +757,113 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
     if (!pbs) continue;
     onStep(`Timing the assert and crash lines found in ${f.name}`);
     try {
-      await timeTraceLines(pbs, hits, /phytraceview/i.test(f.name) ? (base.phy ?? base.ps) : base.ps);
+      await timeTraceLines(pbs, hits, clock, /phytraceview/i.test(f.name) ? (base.phy ?? base.ps) : base.ps);
     } catch {
       /* leave them untimed */
     }
   }
-  // an assert record without its own time takes the time of the first strong line that names the same place
-  for (const e of events) {
-    if (e.ts || !e.where) continue;
+
+  // every core's "Modem Assert: ... assert in file X line N" line, once each, earliest first
+  const cores = new Map<string, CoreAssert>();
+  for (const l of crashLines) {
+    const c = parseCoreAssert(l.text, l.file, l.ts);
+    if (!c) continue;
+    const key = `${c.core}|${c.file}|${c.line}`;
+    const had = cores.get(key);
+    if (!had || (c.ts && (!had.ts || c.ts < had.ts))) cores.set(key, { ...c, task: c.task ?? had?.task, exp: c.exp ?? had?.exp, info: c.info ?? had?.info });
+  }
+  // the command that asked for an assert, when the traces show it arriving
+  const ask = crashLines
+    .filter((l) => /SPATASSERT/i.test(l.text) && /line:|=\s*\d|Extended cmd/i.test(l.text))
+    .sort((a, b) => (a.ts ?? "~").localeCompare(b.ts ?? "~"));
+
+  // one event per assert: the .ass, the console in the .logel and a dump can hold the same one
+  const unique: AssertRecord[] = [];
+  for (const e of [...events].sort((a, b) => Number(/console/.test(a.file)) - Number(/console/.test(b.file)))) {
+    const same = unique.find((k) => k.where && k.where === e.where && (k.expression ?? "") === (e.expression ?? ""));
+    if (same) {
+      same.also = [...(same.also ?? []), e.file];
+      same.ts ??= e.ts;
+      continue;
+    }
+    unique.push(e);
+  }
+  const explained = new Map<string, string>();
+  for (const e of unique) {
     const src0 = e.source?.split("/").pop()?.toLowerCase();
-    const hit = crashLines.find((l) => l.strong && l.ts && src0 && l.text.toLowerCase().includes(src0));
-    if (hit) e.ts = hit.ts;
+    const own = [...cores.values()].find((c) => src0 && c.file.toLowerCase() === src0 && c.line === e.line);
+    // the assert's own trace line times it best; then the record, then any line naming the same file
+    e.ts = own?.ts ?? e.ts ?? crashLines.find((l) => l.strong && l.ts && src0 && l.text.toLowerCase().includes(src0))?.ts ?? null;
+    if (own) {
+      e.core = own.core;
+      e.task ??= own.task;
+    }
+    // the cores that stopped at the same moment
+    const at0 = msOf(e.ts);
+    e.cores = [...cores.values()]
+      .filter((c) => at0 === null || c.ts == null || Math.abs((msOf(c.ts) ?? at0) - at0) < 10000)
+      .sort((a, b) => Number(b === own) - Number(a === own) || (a.ts ?? "~").localeCompare(b.ts ?? "~"));
+    if (e.forced && ask.length) {
+      const near = ask.filter((x) => !x.ts || at0 === null || Math.abs((msOf(x.ts) ?? at0) - at0) < 60000);
+      const l = near.find((x) => /line:/i.test(x.text)) ?? near[0] ?? ask[0];
+      e.forcedBy = { ts: l.ts ?? null, line: l.text, channel: /link_id:(\d+)/i.exec(ask.find((x) => /link_id/i.test(x.text))?.text ?? "")?.[1] };
+    }
+    if (history.length) {
+      const seen = new Set<string>();
+      e.history = history.filter((h) => {
+        const k = `${h.core}|${h.file}|${h.line}|${h.info ?? ""}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+    // which saved files are here
+    for (const d of e.dumps ?? []) d.present = src.files.some((x) => x.name.toLowerCase() === d.file.toLowerCase() && x.size > 0);
+    e.title = assertTitle(e);
+    for (const c of e.cores) explained.set(`${c.core}|${c.file}|${c.line}`, e.title);
+    if (e.forced) explained.set("forced", e.title);
   }
-  // a memory dump usually holds the same assert as the .ass record: keep the record, once
-  const unique: AssertRecord[] = events.filter((e) => !e.fromDump);
-  for (const d of events.filter((e) => e.fromDump)) {
-    if (d.where ? unique.some((k) => k.where === d.where) : unique.length > 0) continue;
-    unique.push(d);
+  // a memory dump with no assert record anywhere still says the modem stopped
+  if (!unique.length && dumpFiles.some((d) => d.what === "Modem memory dump")) {
+    const d = dumpFiles.find((x) => x.what === "Modem memory dump")!;
+    unique.push({ file: d.f.name, kind: "reset", title: "Modem memory dump saved", registers: [], stack: [], raw: "", fromDump: true, history: history.length ? history : undefined });
   }
+
+  // a log with no clock of its own (only the assert output) is dated by Logel's folder name
+  const stamp = /(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{3})/.exec(`${src.name} ${src.files[0]?.path ?? ""}`);
+  if (!span?.date && stamp) span = { date: `${stamp[1]}-${stamp[2]}-${stamp[3]}`, start: span?.start ?? `${stamp[4]}:${stamp[5]}:${stamp[6]}.${stamp[7]}`, end: span?.end ?? null };
+  // versions from the assert record when no version file came with the log
+  const v = unique.find((e) => e.versions?.length)?.versions ?? [];
+  const ver = (re: RegExp) => v.find((x) => re.test(x.label))?.value;
+  const fill = (k: string, value?: string) => {
+    if (value && !device[k]) device[k] = value;
+  };
+  fill("platform", ver(/platform/i));
+  fill("project", ver(/project/i));
+  fill("modem", ver(/base/i));
+  fill("hw", ver(/^hw/i));
+  fill("build", unique.find((e) => e.build)?.build);
+
+  const groups = groupLines(crashLines);
+  for (const g of groups) {
+    const c = parseCoreAssert(g.text, "");
+    const why = c ? explained.get(`${c.core}|${c.file}|${c.line}`) : /SPATASSERT/i.test(g.text) ? explained.get("forced") : undefined;
+    if (why) g.explained = why;
+  }
+
+  // IP captures: one summary, every DNS lookup from all of them
+  let ip: IpSummary | undefined;
+  for (const s of ips) {
+    if (!ip) ip = { ...s, dns: [...s.dns], servers: [...s.servers] };
+    else {
+      for (const k of ["packets", "ul", "dl", "bytes", "ipv4", "ipv6", "tcp", "udp", "icmp", "tcpResets"] as const) ip[k] += s[k];
+      ip.dns.push(...s.dns);
+      ip.servers = [...new Set([...ip.servers, ...s.servers])];
+      if (s.first && (!ip.first || s.first < ip.first)) ip.first = s.first;
+      if (s.last && (!ip.last || s.last > ip.last)) ip.last = s.last;
+    }
+  }
+  ip?.dns.sort((a, b) => a.ts.localeCompare(b.ts));
 
   const rank: Record<FileRole, number> = { analysed: 0, info: 1, skipped: 2 };
   files.sort((a, b) => rank[a.role] - rank[b.role] || b.size - a.size);
@@ -664,7 +879,21 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
     files,
     span,
     notes,
-    crashes: { events: unique, groups: groupLines(crashLines), searched, lines: crashLines.length },
+    crashes: { events: unique, groups, searched, lines: crashLines.length },
   };
   return { capture, text: texts.length ? texts.join("\n\n") : undefined };
+}
+
+/** The first n bytes of a stream. */
+function firstBytes(n: number) {
+  let got = 0;
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, ctl) {
+      if (got >= n) return;
+      const part = chunk.subarray(0, n - got);
+      got += part.length;
+      ctl.enqueue(part);
+      if (got >= n) ctl.terminate();
+    },
+  });
 }

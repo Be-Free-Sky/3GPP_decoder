@@ -5,7 +5,7 @@
 //
 // Fails on: any network request, any console error or CSP violation, a wrong verdict.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -96,6 +96,13 @@ const waitForResult = (title, verdict) =>
     .then(() => true)
     .catch(() => false);
 
+/** A row of the Files list, by the file's exact name. */
+const fileRow = (name) =>
+  page
+    .locator("li")
+    .filter({ has: page.locator("span.font-mono").getByText(name, { exact: true }) })
+    .first();
+
 const onHome = async () => (await page.locator("main h1", { hasText: "3GPP Decoder" }).count()) === 1;
 
 try {
@@ -155,7 +162,7 @@ try {
   const skipped = await page.locator("li", { hasText: "msgview.dat" }).first().innerText();
   check(/Analysed|Modem log/.test(used) && /RRC and NAS/.test(used), "the .logel is listed as analysed");
   check(/display cache/.test(skipped) && /Searched/.test(skipped), "Logel's view cache is listed with the reason, and searched");
-  const tv = await page.locator("li", { hasText: "traceview.dat" }).first().innerText();
+  const tv = await fileRow("traceview.dat").innerText();
   check(/decoded traces/i.test(tv) && /no assert or crash, 1 line mentions one/.test(tv), `Logel's decoded traces are searched line by line ("${tv.split("\n").find((l) => /^Searched/.test(l))}")`);
   check((await page.getByText("nosuch.example.net").count()) > 0, "DNS lookups from the IP capture are listed");
   await page.getByRole("tab", { name: /^Radio/ }).click();
@@ -214,9 +221,25 @@ try {
   check(viewerNet.length === 0 && viewerErr.length === 0, `the HTML report runs offline without errors${viewerErr.length ? ": " + viewerErr[0] : ""}`);
   await viewer.close();
 
-  // several _armlog folders: each read on its own, with a message per folder and the ones with issues named
+  // folders picked one at a time with the folder button, then Add another folder
+  const FOLDERS = join(ROOT, "build", "fixtures", "folders");
+  rmSync(FOLDERS, { recursive: true, force: true });
+  const unzip = spawnSync(PY, ["-c", `import zipfile; zipfile.ZipFile(r"${FIXTURE_MULTI}").extractall(r"${FOLDERS}")`], { encoding: "utf8" });
+  check(unzip.status === 0, "the fixture folders are unpacked for the folder picker");
   await page.getByRole("button", { name: "Home", exact: true }).click();
   await page.getByRole("tab", { name: /Upload log/ }).click();
+  let [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("button", { name: "Choose a folder" }).click()]);
+  await chooser.setFiles(join(FOLDERS, "2026_01_15_09_14_00_000_armlog"));
+  const oneLog = await page.getByRole("button", { name: /Analyse log/ }).waitFor({ timeout: 20000 }).then(() => true).catch(() => false);
+  check(oneLog, "a folder chosen with Choose a folder is ready to analyse");
+  [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("button", { name: "Add another folder" }).click()]);
+  await chooser.setFiles(join(FOLDERS, "2026_01_15_12_14_00_000_armlog"));
+  const twoLogs = await page.getByRole("button", { name: /Analyse 2 logs/ }).waitFor({ timeout: 20000 }).then(() => true).catch(() => false);
+  const picked = await page.getByRole("list", { name: "Logs found" }).innerText().catch(() => "");
+  check(twoLogs && /09_14/.test(picked) && /12_14/.test(picked), `Add another folder adds the second folder to the selection (${picked.split("\n").length} lines)`);
+  await page.getByRole("button", { name: "Start again" }).click();
+
+  // several _armlog folders: each read on its own, with a message per folder and the ones with issues named
   await page.locator("#file-input").setInputFiles(FIXTURE_MULTI);
   await page.getByRole("button", { name: /Analyse 4 logs/ }).waitFor({ timeout: 20000 });
   const listed = await page.getByRole("list", { name: "Logs found" }).getByRole("listitem").count();
@@ -242,14 +265,22 @@ try {
   check(/No modem log in this folder/.test(noLogel), "a folder without a .logel says why it was not analysed");
   const pduCard = await page.locator('[data-log="2026_01_15_10_14_00_000_armlog"]').innerText();
   check(/#27/.test(pduCard), "each folder shows its own problem (PDU session reject #27)");
+  check(/assert on request \(AT\+SPATASSERT\)/.test(pduCard), "an assert asked for by AT command is noted, not taken for the problem");
   await page.locator('[data-log="2026_01_15_10_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
   check(await waitForResult("2026_01_15_10_14_00_000_armlog", "bad"), "a folder opens on its own summary");
+  check((await page.locator('[data-crash-summary="warn"]').count()) === 1, "the summary says the modem was stopped on request");
+  await page.getByRole("tab", { name: /^Asserts/ }).click();
+  const forced = await page.locator('[data-crash-event="forced"]').first().innerText().catch(() => "");
+  check(
+    (await page.locator('[data-crash-verdict="warn"]').count()) === 1 && /Asked for, not a fault/.test(forced) && /AT channel 2/.test(forced) && /atc_basic_cmd\.c/.test(forced) && /T_P_ATC/.test(forced),
+    "the assert console inside the .logel is read: an assert asked for with AT+SPATASSERT, and on which AT channel",
+  );
   await page.getByRole("tab", { name: /^All logs/ }).click();
   check((await page.locator("[data-log]").count()) === 4, "All logs goes back to the overview");
 
   // a modem assert: the .ass record read field by field, found in every file, and made the root cause
   const crashCard = await page.locator('[data-log="2026_01_15_12_14_00_000_armlog"]').innerText();
-  check(/Modem assert in NR RRC \(nrrc_cell_select\.c line 1187\)/.test(crashCard), `the folder with an assert says so first ("${crashCard.split("\n").find((l) => /assert/i.test(l))}")`);
+  check(/Modem assert in NR RRC \(nrrc_cell_select\.c line 1187\)/.test(crashCard), `the folder with an assert says so first ("${crashCard.split("\n").find((l) => /Modem assert/.test(l))}")`);
   await page.locator('[data-log="2026_01_15_12_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
   check(await waitForResult("2026_01_15_12_14_00_000_armlog", "bad"), "the log with an assert opens on its summary");
   const crashHead = await page.locator("[data-verdict] h2").first().innerText().catch(() => "");
@@ -258,25 +289,35 @@ try {
   await page.getByRole("tab", { name: /^Asserts/ }).click();
   const ev = page.locator('[data-crash-event="assert"]');
   const evText = await ev.first().innerText().catch(() => "");
-  check((await ev.count()) === 1, `the .ass record and the memory dump holding the same assert are one event (${await ev.count()})`);
+  check((await ev.count()) === 1, `the .ass record and the same record in the .logel's assert console are one event (${await ev.count()})`);
   check(
-    /ps\/nrrc\/src\/nrrc_cell_select\.c/.test(evText) && /line 1187/.test(evText) && /cell_idx < NRRC_MAX_CELL_NUM/.test(evText) && /NRRC/.test(evText) && /invalid cell index 17/.test(evText),
-    "the assert record gives where, the failed check, the task and the message",
+    /nrrc_cell_select\.c/.test(evText) && /line 1187/.test(evText) && /SCI_ASSERT\(cell_idx < NRRC_MAX_CELL_NUM\)/.test(evText) && /T_NRRC/.test(evText) && /invalid cell index 17/.test(evText) && /also in .*assert console/.test(evText),
+    "the UNISOC assert record gives where, the check, the task and the assert info",
   );
-  check(/0x8043A1E2/.test(evText) && /nrrc_cell_select_handle_sib1/.test(evText) && /MOCORTM_TEST_W26\.03\.1/.test(evText), "registers, call stack and software version are read");
+  for (const d of await ev.first().locator("details").all()) await d.evaluate((el) => (el.open = true));
+  const evAll = await ev.first().innerText();
+  check(/0x8043a1e2/i.test(evAll) && /PSCP CORE0/.test(evAll) && /IRQ mode/.test(evAll) && /5G_MODEM_TEST_W26\.03\.1/.test(evAll), "registers, each core's PC, banked registers and the software version are read");
+  check(/Queue Used\s*97/.test(evAll) && /nrrc_cell_select\.c line 902/.test(evAll) && /byte pool/i.test(evAll), "the running task's queue and the memory lists are summed up");
+  check(/NR PHY/.test(evAll) && /threadx_assert\.c line 6169/.test(evAll), "the other cores that stopped with it are listed");
+  check(/_1\.mem/.test(evAll) && /_2\.mem/.test(evAll) && /radio chip \(RFIC\) registers/.test(evAll), "the files the assert saved are listed, each with what it holds");
+  check(/smp\.c line 167/.test(evAll), "asserts kept in modem memory are read from the memory dump");
   check(/Just before it in the log/.test(evText), "the messages logged just before the assert are listed");
   const strong = await page.locator('[data-crash-line="strong"]').allInnerTexts();
   check(
     strong.length >= 2 && strong.some((t) => /traceview\.dat/.test(t) && /12:14:00\.\d{3}/.test(t)) && strong.some((t) => /\.logel/.test(t)),
     `the assert is also found, timed, in the .logel and in Logel's decoded traces (${strong.length} lines)`,
   );
+  check(!strong.some((t) => /Watch Dog Timer Expired|psAssert %s|Memory allocation Failed/.test(t)), "the firmware's own text in a memory dump is not taken for crashes");
   await page.getByRole("tab", { name: /^Files/ }).click();
-  const assFile = await page.locator("li", { hasText: "_assert.ass" }).first().innerText();
-  const dumpFile = await page.locator("li", { hasText: "_modem_dump.mem" }).first().innerText();
+  const assFile = await fileRow("2026_01_15_12_14_00_000.ass").innerText();
+  const dumpFile = await fileRow("2026_01_15_12_14_00_000_1.mem").innerText();
+  const rficFile = await fileRow("2026_01_15_12_14_00_000_2.mem").innerText();
+  const emptyFile = await fileRow("2026_01_15_12_14_00_000_bt.cap").innerText();
   check(/Modem assert record/.test(assFile) && /Analysed/i.test(await page.locator("h3", { hasText: "Analysed" }).first().innerText()), "the .ass file is listed as an analysed assert record");
-  check(/Crash evidence|Memory dump/.test(dumpFile), "the memory dump is listed as crash evidence");
+  check(/Modem memory dump/.test(dumpFile) && /RFIC register dump/.test(rficFile), "each dump file says what it is");
+  check(/Empty \(0 bytes\)/.test(emptyFile) && (await page.getByText("Not needed").count()) === 0, "every file is analysed; empty ones say so, and none is left out as not needed");
   const crashCopy = await copied(/^Asserts/, 4);
-  check(/nrrc_cell_select\.c/.test(crashCopy) && /Call stack/.test(crashCopy) && /Registers/.test(crashCopy), "Copy report copies the Asserts page");
+  check(/nrrc_cell_select\.c/.test(crashCopy) && /Every core at that moment/.test(crashCopy) && /Registers before the assert/.test(crashCopy), "Copy report copies the Asserts page");
   await page.getByRole("tab", { name: /^All logs/ }).click();
   const fleetCopy = await copied(/^All logs/, 5);
   check(/Issues found in/.test(fleetCopy) && /2026_01_15_11_14_00_000_armlog/.test(fleetCopy), "Copy report copies the All logs page");
