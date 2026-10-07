@@ -48,3 +48,8 @@ __pycache__/
 # build intermediates (npm run build); the published page is ./index.html
 /build/
 /dist/
+
+# kept on this computer only, not published
+/README.md
+/CLAUDE.md
+/tests/
