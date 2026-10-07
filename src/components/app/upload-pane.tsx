@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { ArrowCounterClockwiseIcon, FileArchiveIcon, FileTextIcon, FolderOpenIcon, LightningIcon, UploadSimpleIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, FileArchiveIcon, FileTextIcon, FolderOpenIcon, FoldersIcon, LightningIcon, UploadSimpleIcon } from "@phosphor-icons/react";
 import { toast } from "sonner";
-import { filesFromDrop, isCaptureSelection, sizeText, sourceFromFiles, type CaptureSource, type PickedFile } from "@/lib/capture";
+import { filesFromDrop, isCaptureSelection, sizeText, sourceFromFiles, splitLogs, type CaptureSource, type PickedFile } from "@/lib/capture";
 import { cn } from "@/lib/utils";
 
 const MAX_TEXT = 25 * 1024 * 1024;
@@ -19,7 +19,7 @@ function isBinary(text: string) {
   return odd / head.length > 0.02;
 }
 
-type Staged = { kind: "capture"; source: CaptureSource } | { kind: "text"; file: File };
+type Staged = { kind: "capture"; source: CaptureSource; logs: string[] } | { kind: "text"; file: File };
 
 export function UploadPane({
   onText,
@@ -45,7 +45,9 @@ export function UploadPane({
     }
     setOpening(true);
     try {
-      setStaged({ kind: "capture", source: await sourceFromFiles(picked, folder) });
+      const source = await sourceFromFiles(picked, folder);
+      const logs = splitLogs(source);
+      setStaged({ kind: "capture", source, logs: logs.length > 1 ? logs.map((l) => l.name) : [] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -77,9 +79,12 @@ export function UploadPane({
   };
 
   const s = staged?.kind === "capture" ? staged.source : null;
-  const Icon = s ? (s.kind === "zip" ? FileArchiveIcon : s.kind === "folder" ? FolderOpenIcon : FileArchiveIcon) : FileTextIcon;
+  const logs = staged?.kind === "capture" ? staged.logs : [];
+  const Icon = logs.length ? FoldersIcon : s ? (s.kind === "zip" ? FileArchiveIcon : s.kind === "folder" ? FolderOpenIcon : FileArchiveIcon) : FileTextIcon;
   const title = s ? s.name : staged?.kind === "text" ? staged.file.name : "";
-  const sub = s
+  const sub = logs.length
+    ? `${logs.length} logs (folders ending in _armlog), ${s!.files.length} files, ${sizeText(s!.files.reduce((n, f) => n + f.size, 0))}`
+    : s
     ? `${s.kind === "zip" ? "Zip" : s.kind === "folder" ? "Folder" : "Selection"} with ${s.files.length} ${s.files.length === 1 ? "file" : "files"}, ${sizeText(
         s.kind === "zip" ? s.files.reduce((n, f) => n + f.size, 0) : s.size,
       )}`
@@ -103,9 +108,21 @@ export function UploadPane({
             {title}
           </div>
           <div className="mt-1 text-[14.5px] text-ink-2">{sub}</div>
+          {logs.length ? (
+            <ul className="mx-auto mt-3 flex max-h-40 max-w-[52ch] flex-col gap-1 overflow-y-auto text-left scrollbar-thin" aria-label="Logs found">
+              {logs.map((n) => (
+                <li key={n} className="flex items-center gap-2 rounded-[9px] border border-border bg-panel px-2.5 py-1.5">
+                  <FolderOpenIcon weight="bold" className="size-4 shrink-0 text-blue" />
+                  <span className="break-all font-mono text-[12.5px] font-semibold text-foreground">{n}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {s ? (
             <p className="mx-auto mt-2 max-w-[44ch] text-[13.5px] leading-relaxed text-muted-foreground">
-              The files that help troubleshooting are picked out and read; the list appears with the results.
+              {logs.length
+                ? "Each folder is read on its own, with its own result and a note of which ones have issues."
+                : "The files that help troubleshooting are picked out and read; the list appears with the results."}
             </p>
           ) : null}
         </div>
@@ -116,7 +133,7 @@ export function UploadPane({
             className="btn-primary press inline-flex h-10 items-center gap-2 rounded-[11px] px-5 text-[14px] font-semibold disabled:cursor-progress disabled:opacity-70"
           >
             <LightningIcon weight="fill" className="size-[18px]" />
-            {s ? "Analyse log" : "Decode"}
+            {logs.length ? `Analyse ${logs.length} logs` : s ? "Analyse log" : "Decode"}
           </button>
           <button
             onClick={() => setStaged(null)}
@@ -162,9 +179,9 @@ export function UploadPane({
         <span className="grad mb-1.5 grid size-[68px] place-items-center rounded-[20px] text-white shadow-[0_14px_34px_-10px_rgb(1_138_190/0.65)]">
           <UploadSimpleIcon weight="bold" className="size-[30px]" />
         </span>
-        <span className="text-[23px] font-bold tracking-[-0.01em] text-foreground">{opening ? "Opening" : "Drop a Logel log here"}</span>
-        <span className="text-[16px] text-ink-2">
-          the armlog folder, its zip or the .logel, or{" "}
+        <span className="text-[23px] font-bold tracking-[-0.01em] text-foreground">{opening ? "Opening" : "Drop Logel logs here"}</span>
+        <span className="max-w-[46ch] text-[16px] text-ink-2">
+          one or more _armlog folders, their zips or .logel files, or{" "}
           <u className="font-semibold text-link underline-offset-[3px]">browse files</u>
         </span>
         <input
@@ -210,7 +227,9 @@ export function UploadPane({
         >
           choose a whole folder
         </button>
-        <span className="basis-full text-center">Unzipped here, on this computer. Only the files that help troubleshooting are read.</span>
+        <span className="basis-full text-center">
+          Several _armlog folders are read one by one, each with its own result. Unzipped here, on this computer.
+        </span>
       </div>
     </>
   );

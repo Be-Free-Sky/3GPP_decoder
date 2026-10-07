@@ -1,11 +1,12 @@
-"""Build a synthetic UNISOC Logel armlog (zip) for the end-to-end test.
+"""Build synthetic UNISOC Logel armlogs (zips) for the end-to-end test.
 
-It uses the 5G SA registration-reject sample session, written in the same binary layout
-as a real .logel (see src/lib/capture/logel.ts), next to the other files Logel saves:
-an IP capture with DNS, version files, empty files and a Logel view cache. No real
-device data is involved.
+Sample sessions are written in the same binary layout as a real .logel (see
+src/lib/capture/logel.ts), next to the other files Logel saves: an IP capture with DNS,
+version files, empty files and a Logel view cache. No real device data is involved.
 
-    python decoder/tools/build_logel_fixture.py OUT.zip
+    python decoder/tools/build_logel_fixture.py OUT.zip            one armlog (registration reject)
+    python decoder/tools/build_logel_fixture.py OUT.zip --multi    three armlog folders in one zip:
+        registration reject, PDU session reject, and a folder without a .logel
 """
 
 import json
@@ -54,7 +55,7 @@ def trace(fmt, args=()):
     return struct.pack("<II", 0x3F, len(payload) // 4) + payload
 
 
-def build_logel(session):
+def build_logel(session, pc_start_ms=PC_START_MS):
     items = []  # (tick, bytes)
     lines = session["text"].splitlines()
     t0 = None
@@ -87,7 +88,7 @@ def build_logel(session):
 
     out = bytearray()
     out += packet(0xD1, 0x65, struct.pack("<II", 7, 0x10101))
-    out += packet(0xD1, 0x80, struct.pack("<QI", PC_START_MS, START_TICK), seq=0xFFFF)
+    out += packet(0xD1, 0x80, struct.pack("<QI", pc_start_ms, START_TICK), seq=0xFFFF)
     # cut the item stream into fixed packets so some items cross a packet boundary
     stream = bytearray()
     ticks = []
@@ -105,9 +106,9 @@ def build_logel(session):
         pos += chunk
         if seq == 0x102:
             out += packet(0x00, 0x00, b"\nPlatform Version: MOCORTM_TEST\nProject Version:   Fixture_NR_modem\n")
-            out += packet(0x05, 0x11, struct.pack("<IIII", 0, PC_START_MS // 1000 + 3, 0, START_TICK + 3000))
+            out += packet(0x05, 0x11, struct.pack("<IIII", 0, pc_start_ms // 1000 + 3, 0, START_TICK + 3000))
     # a PHY stream that holds nothing readable
-    out += packet(0xD1, 0x81, struct.pack("<QI", PC_START_MS, 7000))
+    out += packet(0xD1, 0x81, struct.pack("<QI", pc_start_ms, 7000))
     for k in range(3):
         out += packet(0xF8, 0xFE, struct.pack("<III", 0, 1000, 7000 + k) + bytes(12) + bytes(range(256)) * 4, seq=0x9000 + k)
     return bytes(out)
@@ -127,7 +128,7 @@ def ip6_udp(src, dst, sport, dport, payload):
     return struct.pack(">IHBB", 0x60000000, len(udp), 17, 64) + src + dst + udp
 
 
-def build_pcap():
+def build_pcap(pc_start_ms=PC_START_MS):
     ue = bytes.fromhex("24090000000000000000000000000001")
     dns_srv = bytes.fromhex("24050000000000000000000000000011")
     pkts = [
@@ -142,37 +143,49 @@ def build_pcap():
     out = bytearray(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
     for k, (dt, direction, ip) in enumerate(pkts):
         frame = struct.pack("<I", k) + bytes([0, direction]) + bytes(6) + b"\x86\xdd" + ip
-        sec = PC_START_MS // 1000 + int(dt)
+        sec = pc_start_ms // 1000 + int(dt)
         usec = int(round((dt % 1) * 1e6))
         out += struct.pack("<IIII", sec, usec, len(frame), len(frame)) + frame
     return bytes(out)
 
 
-def main(out_path):
-    samples = json.loads((ROOT / "src" / "data" / "samples.json").read_text(encoding="utf-8"))
-    session = next(s for s in samples["sessions"] if s["id"] == "nr-sa-slice-reject")
-    folder = f"{NAME}_armlog/"
+def armlog_files(name, session=None, pc_start_ms=PC_START_MS):
+    """The files Logel saves for one capture; without a session there is no .logel."""
     empty_pcap = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
     files = {
-        f"{NAME}.logel": build_logel(session),
-        f"{NAME}.cap": build_pcap(),
-        f"{NAME}_lte.cap": empty_pcap,
-        f"{NAME}_bt.cap": b"",
-        f"{NAME}.iq": b"",
-        f"{NAME}.lst": b"Start Logging[LittleEndian]\r\nModem Version: TEST_MODEM_1.0\r\nTool Version: R9.0.0.0\r\nStop Logging\r\n",
-        f"{NAME}_modem.ini": b"[Modem Version]\r\nPlatformVersion=MOCORTM_TEST\r\nProjectVersion=Fixture_NR_modem\r\nHWVersion=test_modem\r\n",
-        f"{NAME}_log_stat.txt": b"[Lost Statistics]\r\nTotal lost=0.00\r\nTotal lost count=0\r\nTotal package=12\r\n",
-        f"{NAME}_lte.csv": b"LTE, SIM ID, UE time, EARFCN(Band), PCID, RSRP, SINR\r\n",
-        f"{NAME}_bookmark.xml": b'<?xml version="1.0" ?>\r\n<Bookmark Version="1.0" BugID="">\r\n    <Summary></Summary>\r\n</Bookmark>\r\n',
-        f"{NAME}/msgview.dat": bytes(4096),
-        f"{NAME}/msgview.pbs": b"MSG " + bytes(1020),
+        f"{name}.cap": build_pcap(pc_start_ms),
+        f"{name}_lte.cap": empty_pcap,
+        f"{name}_bt.cap": b"",
+        f"{name}.iq": b"",
+        f"{name}.lst": b"Start Logging[LittleEndian]\r\nModem Version: TEST_MODEM_1.0\r\nTool Version: R9.0.0.0\r\nStop Logging\r\n",
+        f"{name}_modem.ini": b"[Modem Version]\r\nPlatformVersion=MOCORTM_TEST\r\nProjectVersion=Fixture_NR_modem\r\nHWVersion=test_modem\r\n",
+        f"{name}_log_stat.txt": b"[Lost Statistics]\r\nTotal lost=0.00\r\nTotal lost count=0\r\nTotal package=12\r\n",
+        f"{name}_lte.csv": b"LTE, SIM ID, UE time, EARFCN(Band), PCID, RSRP, SINR\r\n",
+        f"{name}_bookmark.xml": b'<?xml version="1.0" ?>\r\n<Bookmark Version="1.0" BugID="">\r\n    <Summary></Summary>\r\n</Bookmark>\r\n',
+        f"{name}/msgview.dat": bytes(4096),
+        f"{name}/msgview.pbs": b"MSG " + bytes(1020),
     }
+    if session:
+        files[f"{name}.logel"] = build_logel(session, pc_start_ms)
+    return files
+
+
+def main(out_path, multi=False):
+    samples = json.loads((ROOT / "src" / "data" / "samples.json").read_text(encoding="utf-8"))
+    sessions = {s["id"]: s for s in samples["sessions"]}
+    folders = {f"{NAME}_armlog": armlog_files(NAME, sessions["nr-sa-slice-reject"])}
+    if multi:
+        hour = 3_600_000
+        folders["2026_01_15_10_14_00_000_armlog"] = armlog_files("2026_01_15_10_14_00_000", sessions["nr-sa-pdu-fail"], PC_START_MS + hour)
+        folders["2026_01_15_11_14_00_000_armlog"] = armlog_files("2026_01_15_11_14_00_000", None, PC_START_MS + 2 * hour)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for name, data in files.items():
-            z.writestr(folder + name, data)
+        for folder, files in folders.items():
+            for name, data in files.items():
+                z.writestr(f"{folder}/{name}", data)
     print(out_path)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "build" / "fixtures" / "armlog_fixture.zip"))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    main(args[0] if args else str(ROOT / "build" / "fixtures" / "armlog_fixture.zip"), multi="--multi" in sys.argv)

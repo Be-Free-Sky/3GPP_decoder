@@ -15,6 +15,7 @@ import type { CaptureInfo, ContextItem, DecodeResult, Finding, MessageEntry, Mod
 import { buildAreas, buildHeadline, type AreaStatus } from "@/lib/areas";
 import { carriedTitle, directionLabel, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
 import { SKYWORTH_LOGO_SVG } from "@/components/app/skyworth-logo";
+import { fleetOverview, logFacts, logVerdict, type FleetLog, type Tone as LogTone } from "@/lib/fleet";
 
 export type ReportTab = "summary" | "flow" | "messages" | "radio" | "context" | "files";
 
@@ -734,6 +735,33 @@ export function emailParts(report: Report, tab: ReportTab, selected: number) {
   return { html, charts };
 }
 
+const LOG_TONE: Record<LogTone, Tone> = { bad: "bad", warn: "warn", ok: "ok", none: "neutral", busy: "info" };
+
+/** The All logs page, as email-safe HTML: which folders have issues, then one card per folder. */
+export function fleetEmailHtml(logs: FleetLog[]) {
+  const o = fleetOverview(logs);
+  const t = LOG_TONE[o.tone];
+  const hero = card(
+    `${chip(esc(o.kick), t)}<div style="${FONT}font-size:24px;line-height:1.3;font-weight:700;color:${C.ink};margin:8px 0 0 0">${esc(o.head)}</div>${o.detail ? para(esc(o.detail), "font-size:15px") : ""}`,
+    { top: TONE[t].mark, pad: "20px 22px" },
+  );
+  const cards = logs.map((l, i) => {
+    const v = logVerdict(l);
+    const tt = LOG_TONE[v.tone];
+    const facts = logFacts(l);
+    const issue = v.tone === "bad" || v.tone === "warn";
+    return card(
+      `${table(
+        `<tr><td valign="top" style="${MONO}font-size:14px;font-weight:700;color:${C.ink};word-break:break-all">${esc(l.name)}</td><td align="right" valign="top" style="padding-left:8px">${chip(esc(v.word), tt)}</td></tr>`,
+      )}<div style="${FONT}font-size:12.5px;color:${C.muted};margin-top:2px">Log ${i + 1} of ${logs.length}${facts.length ? ` &#183; ${esc(facts.join(" · "))}` : ""}</div><div style="${FONT}font-size:15px;font-weight:600;color:${C.ink};margin-top:8px">${esc(v.head)}</div>${
+        v.detail ? para(esc(v.detail)) : ""
+      }${v.todo && issue ? box(`<b style="color:${C.okInk}">What to do:</b> ${esc(v.todo)}`, "ok") : ""}`,
+      { top: TONE[tt].mark, pad: "14px 16px" },
+    );
+  });
+  return `<div style="background:${C.page};padding:14px 14px 0 14px;${FONT}color:${C.ink}">${table(`<tr><td>${hero}${cards.join("")}</td></tr>`, "max-width:880px;")}</div>`;
+}
+
 /** Render chart specs to PNG data URLs (Outlook shows images, not SVG). */
 export async function chartPngs(charts: ChartSpec[], scale = 2): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
@@ -769,6 +797,11 @@ export async function emailHtml(report: Report, tab: ReportTab, selected: number
     const c = charts.find((x) => x.id === id)!;
     return png[id] ? `<img src="${png[id]}" width="${c.w}" height="${c.h}" alt="${esc(id)}" style="display:block;max-width:100%;height:auto;border:1px solid ${C.line};border-radius:12px">` : "";
   });
+}
+
+/** Static fallback for several logs (dev server only): the All logs page as a document. */
+export function fleetFileHtml(logs: FleetLog[], meta: ReportMeta) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(meta.title)} - Skyworth 3GPP Decoder report</title></head><body style="margin:0;background:${C.page}">${fleetEmailHtml(logs)}${footer()}</body></html>`;
 }
 
 /** The whole report as one self-contained HTML file. */
@@ -832,9 +865,10 @@ ${footer()}
 </body></html>`;
 }
 
-/** Report data built into an exported page (see viewerHtml). */
+/** Report data built into an exported page (see viewerHtml): one log, or several. */
 export interface EmbeddedReport {
-  report: Report;
+  report?: Report;
+  fleet?: FleetLog[];
   meta: ReportMeta;
   exported: string;
 }
@@ -851,12 +885,21 @@ export function withoutFiles(report: Report): Report {
   return { ...report, capture };
 }
 
+/** Several logs to share, each without its list of files. */
+export function fleetWithoutFiles(logs: FleetLog[]): FleetLog[] {
+  return logs.map((l) => {
+    const info = l.info ? { ...l.info } : undefined;
+    if (info) delete info.files;
+    return { ...l, report: l.report ? withoutFiles(l.report) : undefined, info };
+  });
+}
+
 /**
  * The report as one .html file that looks and works like the app: this page's own code and
  * styles (about 1 MB, without the decoder engine) opened straight on this report. Null on the
  * dev server, where the app is loaded from many files rather than one page.
  */
-export function viewerHtml(report: Report, meta: ReportMeta): string | null {
+export function viewerHtml(content: { report?: Report; fleet?: FleetLog[] }, meta: ReportMeta): string | null {
   const code = document.querySelector<HTMLScriptElement>('script[type="module"]')?.textContent ?? "";
   if (code.length < 10000) return null;
   const css = Array.from(document.querySelectorAll("style"))
@@ -864,7 +907,7 @@ export function viewerHtml(report: Report, meta: ReportMeta): string | null {
     .join("\n");
   const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.outerHTML ?? "";
   // "<" as \u003c keeps the data from ending its <script> element early
-  const data = JSON.stringify({ report, meta, exported: new Date().toISOString() } satisfies EmbeddedReport).replace(/</g, "\\u003c");
+  const data = JSON.stringify({ ...content, meta, exported: new Date().toISOString() } satisfies EmbeddedReport).replace(/</g, "\\u003c");
   return [
     "<!doctype html>",
     '<html lang="en" class="h-full antialiased">',

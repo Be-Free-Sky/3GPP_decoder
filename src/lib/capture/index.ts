@@ -64,9 +64,11 @@ function fileSource(f: File, path?: string): SourceFile {
   return { path: path || f.webkitRelativePath || f.name, name: f.name, size: f.size, read: async () => new Uint8Array(await f.arrayBuffer()) };
 }
 
-async function zipSources(f: File): Promise<SourceFile[]> {
+/** A zip's entries; `under` puts them in a folder named after the zip, so several zips stay apart. */
+async function zipSources(f: File, under?: string): Promise<SourceFile[]> {
   const entries = await listZip(f);
-  return entries.map((e) => ({ path: e.path, name: e.name, size: e.size, read: () => readZipEntry(f, e) }));
+  const prefix = under ? `${under}/` : "";
+  return entries.map((e) => ({ path: prefix + e.path, name: e.name, size: e.size, read: () => readZipEntry(f, e) }));
 }
 
 export interface PickedFile {
@@ -81,16 +83,72 @@ export async function sourceFromFiles(picked: PickedFile[], folderName?: string)
   let zipped = 0;
   for (const { file: f, path } of picked) {
     if (/\.zip$/i.test(f.name) || (picked.length === 1 && !/\.\w{1,6}$/.test(f.name) && (await isZip(f)))) {
-      out.push(...(await zipSources(f)));
+      // one zip on its own keeps its paths; zips among other files get a folder of their own name
+      const where = (path || f.webkitRelativePath || f.name).replace(/\.zip$/i, "");
+      out.push(...(await zipSources(f, picked.length > 1 ? where : undefined)));
       zipped++;
     } else out.push(fileSource(f, path));
   }
   const size = picked.reduce((n, p) => n + p.file.size, 0);
   const first = picked[0];
-  const root = folderName || (first?.path || first?.file.webkitRelativePath || "").split("/").filter(Boolean)[0];
+  const tops = new Set(picked.map((p) => (p.path || p.file.webkitRelativePath || "").split("/").filter(Boolean)).filter((x) => x.length > 1).map((x) => x[0]));
+  const root = folderName || (tops.size === 1 ? [...tops][0] : undefined);
   if (picked.length === 1 && zipped === 1) return { name: first.file.name.replace(/\.zip$/i, ""), kind: "zip", size, files: out };
-  if (root && picked.length > 1 && (first.path || first.file.webkitRelativePath)) return { name: root, kind: "folder", size, files: out };
+  if (root && picked.length > 1) return { name: root, kind: "folder", size, files: out };
+  if (tops.size > 1) return { name: `${tops.size} folders`, kind: "folder", size, files: out };
+  if (zipped > 1 && zipped === picked.length) return { name: `${zipped} zips`, kind: "zip", size, files: out };
   return { name: picked.length === 1 ? first.file.name : `${picked.length} files`, kind: "files", size, files: out };
+}
+
+const ARMLOG = /_armlog$/i;
+
+/**
+ * The logs in a selection. Logel saves each capture as a folder whose name ends in "_armlog", so
+ * every such folder is one log (the deepest one, when a zip's folder holds a folder of the same
+ * name). Selections without _armlog folders fall back to one log per folder holding a .logel.
+ * Paths inside each log are made relative to the log's folder.
+ */
+export function splitLogs(src: CaptureSource): CaptureSource[] {
+  const dirsOf = (path: string) => path.split("/").slice(0, -1);
+  const keyOf = (path: string, test: (dir: string, parts: string[], i: number) => boolean) => {
+    const parts = dirsOf(path);
+    let at = -1;
+    parts.forEach((d, i) => {
+      if (test(d, parts, i)) at = i;
+    });
+    return at >= 0 ? parts.slice(0, at + 1).join("/") : null;
+  };
+  let groups = new Map<string, SourceFile[]>();
+  for (const f of src.files) {
+    const k = keyOf(f.path, (d) => ARMLOG.test(d));
+    if (k) groups.set(k, [...(groups.get(k) ?? []), f]);
+  }
+  // .logel files outside any _armlog folder: one log per folder that holds one
+  const loose = src.files.filter((f) => !keyOf(f.path, (d) => ARMLOG.test(d)));
+  const logelDirs = [...new Set(loose.filter((f) => /\.logel$/i.test(f.name)).map((f) => dirsOf(f.path).join("/")))];
+  if (logelDirs.length && (groups.size || logelDirs.length > 1)) {
+    for (const f of loose) {
+      const dir = dirsOf(f.path).join("/");
+      const home = logelDirs.filter((d) => d === "" || dir === d || dir.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0];
+      if (home !== undefined) groups.set(home || ".", [...(groups.get(home || ".") ?? []), f]);
+    }
+  }
+  if (groups.size <= 1) return [src];
+  // by folder name: Logel names folders by date and time, so this is the order they were captured
+  const last = (k: string) => k.split("/").pop() ?? k;
+  groups = new Map([...groups].sort(([a], [b]) => last(a).localeCompare(last(b)) || a.localeCompare(b)));
+  const names = [...groups.keys()].map((k) => k.split("/").pop() || src.name);
+  return [...groups].map(([key, files], i) => {
+    const dup = names.filter((n) => n === names[i]).length > 1;
+    const name = dup ? key : names[i];
+    const cut = key === "." ? 0 : key.length + 1;
+    return {
+      name,
+      kind: "folder" as const,
+      size: files.reduce((n, f) => n + f.size, 0),
+      files: files.map((f) => ({ ...f, path: f.path.slice(cut) || f.name })),
+    };
+  });
 }
 
 /** Is this a capture (zip, folder, .logel, several files) rather than one text export? */

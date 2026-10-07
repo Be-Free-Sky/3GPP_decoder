@@ -34,12 +34,14 @@ const S1AP_HEX =
   "000c403e000005000800020001001a00161507417208091010103254769802e0e000040201d031004300060000f1100001006440080000f110123450100086400130";
 const SAMPLES = JSON.parse(readFileSync(join(ROOT, "src/data/samples.json"), "utf8"));
 const FIXTURE = join(ROOT, "build", "fixtures", "armlog_fixture.zip");
+const FIXTURE_MULTI = join(ROOT, "build", "fixtures", "armlogs_multi.zip");
 
 // a synthetic Logel armlog zip in the real binary layout (decoder/tools/build_logel_fixture.py)
 const PY = [join(ROOT, ".venv", "Scripts", "python.exe"), join(ROOT, ".venv", "bin", "python")].find((p) => existsSync(p)) ?? "python";
 const built = spawnSync(PY, [join(ROOT, "decoder", "tools", "build_logel_fixture.py"), FIXTURE], { cwd: ROOT, encoding: "utf8" });
-if (built.status !== 0) {
-  console.error("Could not build the armlog fixture:", built.stderr || built.stdout);
+const builtMulti = spawnSync(PY, [join(ROOT, "decoder", "tools", "build_logel_fixture.py"), FIXTURE_MULTI, "--multi"], { cwd: ROOT, encoding: "utf8" });
+if (built.status !== 0 || builtMulti.status !== 0) {
+  console.error("Could not build the armlog fixtures:", built.stderr || built.stdout, builtMulti.stderr || builtMulti.stdout);
   process.exit(1);
 }
 
@@ -202,6 +204,48 @@ try {
   check((await viewer.getByText("Message 3 of").count()) === 1, "messages open in the HTML report as in the app");
   check(viewerNet.length === 0 && viewerErr.length === 0, `the HTML report runs offline without errors${viewerErr.length ? ": " + viewerErr[0] : ""}`);
   await viewer.close();
+
+  // several _armlog folders: each read on its own, with a message per folder and the ones with issues named
+  await page.getByRole("button", { name: "Home", exact: true }).click();
+  await page.getByRole("tab", { name: /Upload log/ }).click();
+  await page.locator("#file-input").setInputFiles(FIXTURE_MULTI);
+  await page.getByRole("button", { name: /Analyse 3 logs/ }).waitFor({ timeout: 20000 });
+  const listed = await page.getByRole("list", { name: "Logs found" }).getByRole("listitem").count();
+  check(listed === 3, `the three _armlog folders are found before analysing (${listed})`);
+  await page.getByRole("button", { name: /Analyse 3 logs/ }).click();
+  const fleetDone = await page
+    .waitForFunction(() => document.querySelectorAll("[data-log]").length === 3 && !document.querySelector('[data-log][data-tone="busy"]'), null, { timeout: 120000 })
+    .then(() => true)
+    .catch(() => false);
+  const tones = await page.locator("[data-log]").evaluateAll((els) => els.map((e) => `${e.getAttribute("data-log")}=${e.getAttribute("data-tone")}`));
+  check(fleetDone && tones.join(" ") === "2026_01_15_09_14_00_000_armlog=bad 2026_01_15_10_14_00_000_armlog=bad 2026_01_15_11_14_00_000_armlog=none", `each folder gets its own result (${tones.join(", ")})`);
+  const fleetHead = await page.locator("[data-fleet-tone] h2").innerText();
+  check(
+    /2026_01_15_09_14_00_000_armlog/.test(fleetHead) && /2026_01_15_10_14_00_000_armlog/.test(fleetHead) && !/11_14/.test(fleetHead),
+    `the overview names the folders with issues ("${fleetHead}")`,
+  );
+  const noLogel = await page.locator('[data-log="2026_01_15_11_14_00_000_armlog"]').innerText();
+  check(/No modem log in this folder/.test(noLogel), "a folder without a .logel says why it was not analysed");
+  const pduCard = await page.locator('[data-log="2026_01_15_10_14_00_000_armlog"]').innerText();
+  check(/#27/.test(pduCard), "each folder shows its own problem (PDU session reject #27)");
+  await page.locator('[data-log="2026_01_15_10_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
+  check(await waitForResult("2026_01_15_10_14_00_000_armlog", "bad"), "a folder opens on its own summary");
+  await page.getByRole("tab", { name: /^All logs/ }).click();
+  check((await page.locator("[data-log]").count()) === 3, "All logs goes back to the overview");
+  const fleetCopy = await copied(/^All logs/, 4);
+  check(/Issues found in/.test(fleetCopy) && /2026_01_15_11_14_00_000_armlog/.test(fleetCopy), "Copy report copies the All logs page");
+  const [dlFleet] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: /HTML report/ }).first().click()]);
+  const fleetFile = join(ROOT, "build", "fixtures", "report-fleet.html");
+  await dlFleet.saveAs(fleetFile);
+  const fv = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await fv.goto(pathToFileURL(fleetFile).href);
+  await fv.locator("[data-log]").first().waitFor({ timeout: 20000 }).catch(() => {});
+  const fvLogs = await fv.locator("[data-log]").count();
+  await fv.locator('[data-log="2026_01_15_09_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
+  const fvHead = await fv.locator("[data-verdict] h2").first().innerText({ timeout: 10000 }).catch(() => "");
+  const fvExports = await fv.getByRole("button", { name: /Copy report|HTML report|Copy the summary|JSON/ }).count();
+  check(fvLogs === 3 && /#62/.test(fvHead) && fvExports === 0, `the shared report holds every folder and opens each one (${fvLogs} logs, "${fvHead}")`);
+  await fv.close();
 
   // an interface message: the S1AP / NGAP block is unpacked on first use
   await page.getByRole("button", { name: "Home", exact: true }).click();

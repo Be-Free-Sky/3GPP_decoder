@@ -71,6 +71,16 @@ The results open on the **Summary** for a session, or on the **Message** for one
 **JSON** saves the raw decode.
 The look, colours, header and footer follow Skyworth Log Prism.
 
+## Several logs at once
+
+Drop several `_armlog` folders together, a parent folder that holds them, or several zips,
+then **Analyse N logs**. Every folder whose name ends in `_armlog` is one log; each is read
+on its own, one after the other. The **All logs** page then says which folders have issues
+and shows a card per folder: the main problem and what to do, *All good*, or why it could
+not be analysed (for example a folder without a `.logel`). **Open this log** shows that
+folder's full Summary, Signalling flow, Messages, Radio and Context; the All logs tab goes
+back. Copy report copies the All logs page, and HTML report shares every log in one file.
+
 ## Logel captures (UNISOC armlog)
 
 Logel saves a capture as a folder (`<date>_armlog`) of about 40 files. Drop the folder, its
