@@ -123,14 +123,18 @@ def decode_capture(cap):
         res = capture_mod.decode_record(r.get("protocol"), data,
                                         lambda d, h=header: _decode_record({"bytes": d, "header": h}, "auto")[0])
         items.append({"index": i, "record": rec, "result": res, "hints": {}})
-    extra = capture_mod.extras_for(cap, len(items))
+    extra = capture_mod.extras_for(cap, len(items), [(it["index"], it["record"].get("timestamp")) for it in items])
     report = {"version": VERSION, "truncated": truncated, "messages": []}
     for it in items:
         rec = it["record"]
         report["messages"].append({"index": it["index"], "line": None, "timestamp": rec.get("timestamp"),
                                    "header": rec.get("header"), "result": _strip_private(it["result"])})
-    report["session"] = session_mod.analyze(items, extra) if items else None
-    report["capture"] = {k: cap.get(k) for k in ("name", "kind", "files", "device", "ip", "stats", "notes", "span") if cap.get(k) is not None}
+    crashes = cap.get("crashes") or {}
+    crashed = bool(crashes.get("events") or any(g.get("strong") for g in crashes.get("groups") or []))
+    # an assert record is worth a report on its own, even with no messages beside it
+    report["session"] = session_mod.analyze(items, extra) if items or crashed else None
+    report["capture"] = {k: cap.get(k) for k in ("name", "kind", "files", "device", "ip", "stats", "notes", "span", "crashes")
+                         if cap.get(k) is not None}
     if not items:
         report["capture"]["extra"] = extra
     return report

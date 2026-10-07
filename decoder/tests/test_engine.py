@@ -220,5 +220,52 @@ class Capture(unittest.TestCase):
         self.assertNotEqual(regs[0]["status"], "retried")
 
 
+ASSERT_EVENT = {"file": "modem_assert.ass", "kind": "assert", "title": "Modem assert in NR RRC (nrrc_cell.c line 1187)",
+                "where": "nrrc_cell.c line 1187", "source": "ps/nrrc/nrrc_cell.c", "line": 1187,
+                "module": "NR RRC (5G radio resource control)", "expression": "cell_idx < NRRC_MAX_CELL", "task": "NRRC",
+                "ts": "09:14:02.950", "registers": [], "stack": [], "raw": ""}
+
+
+class Crashes(unittest.TestCase):
+    def test_assert_is_the_root_cause(self):
+        cap = capture_of("nr-sa-slice-reject", crashes={"events": [ASSERT_EVENT], "groups": [], "searched": ["a"], "lines": 0})
+        s = engine.decode_capture(cap)["session"]
+        root = s["narrative"]["root"]
+        self.assertEqual(root["title"], ASSERT_EVENT["title"])
+        crash = next(f for f in s["findings"] if f.get("category") == "crash")
+        self.assertIn("cell_idx < NRRC_MAX_CELL", crash["detail"])
+        self.assertIn("task NRRC", crash["detail"])
+        # it points at the last message logged before it
+        msgs = engine.decode_capture(cap)["messages"]
+        self.assertTrue(crash["refs"])
+        self.assertLessEqual(msgs[crash["refs"][0]]["timestamp"], "09:14:02.950")
+        # the procedure that failed before it is still reported
+        self.assertTrue(any(f.get("category") != "crash" and f["severity"] == "critical" for f in s["findings"]))
+
+    def test_assert_without_messages_still_reports(self):
+        rep = engine.decode_capture({"name": "t", "records": [], "crashes": {"events": [ASSERT_EVENT], "groups": [], "searched": ["a"], "lines": 0}})
+        self.assertEqual(rep["session"]["verdict"], "failure")
+        self.assertEqual(rep["capture"]["crashes"]["events"][0]["task"], "NRRC")
+
+    def test_crash_lines_without_a_record(self):
+        groups = [{"kind": "watchdog", "strong": True, "text": "WDT timeout: task L1C not fed", "files": {"x.logel": 3},
+                   "count": 3, "first": "09:14:01.000", "last": "09:14:02.000"},
+                  {"kind": "assert", "strong": True, "text": "SCI_ASSERT nrrc_cell.c 1187", "files": {"traceview.dat": 1},
+                   "count": 1, "first": "09:14:02.940", "last": "09:14:02.940"}]
+        s = engine.decode_capture(capture_of("nr-sa-slice-reject", crashes={"events": [ASSERT_EVENT], "groups": groups,
+                                                                           "searched": ["a"], "lines": 4}))["session"]
+        crash = [f for f in s["findings"] if f.get("category") == "crash"]
+        # the trace line naming the record's source file is the same assert: not reported twice
+        self.assertEqual(len(crash), 2)
+        self.assertEqual(s["narrative"]["root"]["title"], "The modem watchdog fired")  # it came first
+
+    def test_nothing_found_is_said(self):
+        groups = [{"kind": "assert", "strong": False, "text": "assert check passed", "files": {"a": 1}, "count": 1, "first": None, "last": None}]
+        s = engine.decode_capture(capture_of("lte-attach-ok", crashes={"events": [], "groups": groups, "searched": ["a", "b"], "lines": 1}))["session"]
+        ok = [f for f in s["findings"] if f.get("category") == "crash"]
+        self.assertEqual(ok[0]["severity"], "ok")
+        self.assertIn("2 files were searched", ok[0]["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,15 +3,19 @@
  * troubleshooting, read them and build the capture the engine decodes.
  */
 
-import { isZip, listZip, readZipEntry } from "./zip";
-import { isLogel, parseLogel, type LogelResult, type RadioSample } from "./logel";
+import { isZip, listZip, readZipEntry, zipEntryStream } from "./zip";
+import { fmtClock, isLogel, parseLogel, type LogelResult, type RadioSample } from "./logel";
 import { summarizePcap, type IpSummary } from "./pcap";
+import { CRASH_FILE, fileText, looksLikeAssert, parseAssert, printableStrings, scanText, type CrashLine } from "./crash";
+import type { AssertRecord, CrashGroup, CrashInfo } from "@/lib/engine/types";
 
 export interface SourceFile {
   path: string;
   name: string;
   size: number;
   read: () => Promise<Uint8Array>;
+  /** the bytes in chunks, for files too large to hold whole */
+  stream: () => Promise<ReadableStream<Uint8Array>>;
 }
 
 export interface CaptureSource {
@@ -45,6 +49,7 @@ export interface Capture {
   files: CaptureFile[];
   span?: { date: string | null; start: string | null; end: string | null };
   notes: string[];
+  crashes: CrashInfo;
 }
 
 export interface Prepared {
@@ -61,14 +66,20 @@ export const sizeText = (n: number) =>
 // --- building a source ------------------------------------------------------------
 
 function fileSource(f: File, path?: string): SourceFile {
-  return { path: path || f.webkitRelativePath || f.name, name: f.name, size: f.size, read: async () => new Uint8Array(await f.arrayBuffer()) };
+  return {
+    path: path || f.webkitRelativePath || f.name,
+    name: f.name,
+    size: f.size,
+    read: async () => new Uint8Array(await f.arrayBuffer()),
+    stream: async () => f.stream(),
+  };
 }
 
 /** A zip's entries; `under` puts them in a folder named after the zip, so several zips stay apart. */
 async function zipSources(f: File, under?: string): Promise<SourceFile[]> {
   const entries = await listZip(f);
   const prefix = under ? `${under}/` : "";
-  return entries.map((e) => ({ path: prefix + e.path, name: e.name, size: e.size, read: () => readZipEntry(f, e) }));
+  return entries.map((e) => ({ path: prefix + e.path, name: e.name, size: e.size, read: () => readZipEntry(f, e), stream: () => zipEntryStream(f, e) }));
 }
 
 export interface PickedFile {
@@ -195,25 +206,29 @@ interface Rule {
   reason: string;
 }
 
-const CACHE = "Logel's display cache, built when the log was opened in Logel. Everything in it comes from the .logel, which is read instead.";
+const SEARCHED = "Searched line by line for asserts, crashes, exceptions and resets.";
 
 const RULES: Rule[] = [
-  { test: /\.logel$/i, role: "analysed", label: "Modem log (Logel)", reason: "Every RRC and NAS message, the modem's radio measurements and its AT command answers." },
-  { test: /(^|\/)(msgview|msgflowview|traceview|phytraceview|phyparamchart)\.(dat|pbs)$/i, role: "skipped", label: "Logel view cache", reason: CACHE },
-  { test: /_(bt|wcn)\.cap$/i, role: "skipped", label: "Bluetooth / Wi-Fi chip packets", reason: "Packets of the connectivity chip, not the cellular modem." },
-  { test: /_mux\.cap$/i, role: "skipped", label: "AT channel packets", reason: "Raw AT channel traffic. The AT answers are read from the .logel." },
+  { test: /\.logel$/i, role: "analysed", label: "Modem log (Logel)", reason: "Every RRC and NAS message, the modem's radio measurements, its AT command answers, and every assert or crash line." },
+  { test: /\.ass$/i, role: "analysed", label: "Modem assert record", reason: "Written when the modem asserts: where and why it stopped, the task, registers and call stack." },
+  { test: /(^|\/)(traceview|phytraceview)\.dat$/i, role: "info", label: "Logel decoded traces", reason: `Logel's decoded copy of every modem trace, the PHY traces too (the .logel keeps them as numbers). ${SEARCHED}` },
+  { test: /(^|\/)(traceview|phytraceview)\.pbs$/i, role: "info", label: "Trace index", reason: "Time and place of every decoded trace line: used to time any assert found in the decoded traces." },
+  { test: /(^|\/)(msgview|msgflowview|phyparamchart)\.(dat|pbs)$/i, role: "info", label: "Logel view cache", reason: `Logel's display cache, built from the .logel. ${SEARCHED}` },
+  { test: /_(bt|wcn)\.cap$/i, role: "info", label: "Bluetooth / Wi-Fi chip packets", reason: `Packets of the connectivity chip, not the cellular modem. ${SEARCHED}` },
+  { test: /_mux\.cap$/i, role: "info", label: "AT channel packets", reason: `Raw AT channel traffic; the AT answers are read from the .logel. ${SEARCHED}` },
   { test: /\.(cap|pcap)$/i, role: "check", label: "IP packets", reason: "Data traffic of the modem: DNS lookups, their answers and failures." },
-  { test: /\.pcapng$/i, role: "skipped", label: "IP packets (pcapng)", reason: "pcapng is not read yet. Logel's own .cap files are." },
+  { test: /\.pcapng$/i, role: "info", label: "IP packets (pcapng)", reason: `pcapng is not decoded yet. ${SEARCHED}` },
   { test: /_(lte|nr|5g|gsm|wcdma|td)\.csv$/i, role: "check", label: "Signal measurements", reason: "RSRP / SINR samples exported by Logel." },
   { test: /\.lst$/i, role: "info", label: "Log record", reason: "Modem software and Logel tool versions." },
   { test: /_modem\.ini$/i, role: "info", label: "Modem version", reason: "Platform, project, hardware and build time of the modem software." },
   { test: /_log_stat\.txt$/i, role: "info", label: "Lost-packet statistics", reason: "Shows whether the log is complete. Lost packets mean missing messages." },
   { test: /_bookmark\.xml$/i, role: "check", label: "Bookmarks", reason: "Bug ID and notes added in Logel." },
-  { test: /\.iq$/i, role: "skipped", label: "IQ samples", reason: "Raw radio samples for lab analysis. They hold no signalling." },
-  { test: /(\.wvoice|_vt_(up|down)\.bin)$/i, role: "skipped", label: "Call media", reason: "Voice or video call payload, not signalling." },
-  { test: /(\.xdsp_log|_wcn_dsp\.org|_dsp_ag_trace\.txt)$/i, role: "skipped", label: "DSP trace", reason: "Chip trace in UNISOC's own format. It needs UNISOC's trace database." },
-  { test: /\.wrrc_log$/i, role: "skipped", label: "WCDMA RRC trace", reason: "3G RRC trace. Signalling is read from the .logel." },
-  { test: /_ipa_des\.bin$/i, role: "skipped", label: "IP accelerator data", reason: "Internal modem buffers, not useful for analysis." },
+  { test: /\.iq$/i, role: "skipped", label: "IQ samples", reason: "Raw radio samples for lab analysis: numbers only, no signalling or text to search." },
+  { test: /(\.wvoice|_vt_(up|down)\.bin)$/i, role: "skipped", label: "Call media", reason: "Voice or video call payload: no signalling or text to search." },
+  { test: /(\.xdsp_log|_wcn_dsp\.org|_dsp_ag_trace\.txt)$/i, role: "info", label: "DSP trace", reason: `Chip trace in UNISOC's own format. ${SEARCHED}` },
+  { test: /\.wrrc_log$/i, role: "info", label: "WCDMA RRC trace", reason: `3G RRC trace; signalling is read from the .logel. ${SEARCHED}` },
+  { test: /_ipa_des\.bin$/i, role: "info", label: "IP accelerator data", reason: `Internal modem buffers. ${SEARCHED}` },
+  { test: CRASH_FILE, role: "analysed", label: "Crash evidence", reason: "Saved only when something crashed: read for the assert or exception it records." },
   { test: /_trace\.txt$/i, role: "check", label: "Text trace", reason: "Trace lines exported as text." },
   { test: /\.(txt|log|hex|csv)$/i, role: "check", label: "Text export", reason: "Hex messages exported as text." },
   { test: /\.zip$/i, role: "skipped", label: "Archive inside the archive", reason: "Unzip it and open it on its own." },
@@ -280,6 +295,162 @@ function parseMeasCsv(text: string): RadioSample[] {
 
 // --- read the capture -------------------------------------------------------------
 
+const IN_MEMORY = 48 * MB;
+const DUMP = /\.(?:dmp|mdmp|core|mem)$|dump/i;
+
+/** Crash lines in bytes held in memory (text files, binaries, UTF-16). */
+function scanBytes(data: Uint8Array, name: string): CrashLine[] {
+  const { text, binary } = fileText(data, data.length);
+  if (!binary) return scanText(text, name, 0);
+  const out: CrashLine[] = [];
+  const dec = new TextDecoder("latin1");
+  const WIN = 16 * MB;
+  let lastEnd = -1;
+  for (let w = 0; w < data.length; w += WIN) {
+    const from = Math.max(0, w - 1024);
+    for (const hit of scanText(dec.decode(data.subarray(from, Math.min(data.length, w + WIN))), name, from)) {
+      if (hit.offset <= lastEnd) continue;
+      lastEnd = hit.offset;
+      out.push(hit);
+    }
+  }
+  return out;
+}
+
+/** Crash lines in a file read chunk by chunk (Logel's 300 MB+ decoded trace view, dumps). */
+async function scanStream(f: SourceFile, progress: (done: number) => void): Promise<CrashLine[]> {
+  const reader = (await f.stream()).getReader();
+  const dec = new TextDecoder("latin1");
+  const out: CrashLine[] = [];
+  let pending: Uint8Array[] = [];
+  let pendingSize = 0;
+  let pos = 0; // file offset of the first pending byte
+  let carry = "";
+  let lastEnd = -1;
+  const flush = (final: boolean) => {
+    if (!pendingSize && !final) return;
+    const buf = new Uint8Array(pendingSize);
+    let at = 0;
+    for (const c of pending) {
+      buf.set(c, at);
+      at += c.length;
+    }
+    const text = carry + dec.decode(buf);
+    const textStart = pos - carry.length;
+    for (const hit of scanText(text, f.name, textStart)) {
+      if (hit.offset <= lastEnd) continue;
+      lastEnd = hit.offset;
+      out.push(hit);
+    }
+    pos += pendingSize;
+    carry = text.slice(-1024);
+    pending = [];
+    pendingSize = 0;
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pending.push(value);
+    pendingSize += value.length;
+    if (pendingSize >= 16 * MB) {
+      flush(false);
+      progress(pos);
+      await new Promise((r) => setTimeout(r, 0));
+      if (out.length > 5000) break;
+    }
+  }
+  flush(true);
+  return out;
+}
+
+/**
+ * Time trace view lines with Logel's index (traceview.pbs): a "TIND" header, then from 0x200
+ * one 44-byte row per line: tick at +12, length at +26, offset in the .dat at +28.
+ */
+async function timeTraceLines(pbs: SourceFile, hits: CrashLine[], base: number | null) {
+  if (!hits.length || base === null) return;
+  const sorted = [...hits].sort((a, b) => a.offset - b.offset);
+  const offs = sorted.map((h) => h.offset);
+  const reader = (await pbs.stream()).getReader();
+  const ROW = 44;
+  let next = 0x200; // file offset of the next row
+  let bufStart = 0;
+  let carry = new Uint8Array(0);
+  let left = sorted.length;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const buf = new Uint8Array(carry.length + value.length);
+    buf.set(carry);
+    buf.set(value, carry.length);
+    if (bufStart === 0 && buf.length >= 4 && String.fromCharCode(...buf.subarray(0, 4)) !== "TIND") return;
+    let i = next - bufStart;
+    if (i > buf.length) {
+      carry = buf;
+      continue;
+    }
+    const dv = new DataView(buf.buffer);
+    for (; i + ROW <= buf.length; i += ROW) {
+      const at = dv.getUint32(i + 28, true);
+      const len = dv.getUint16(i + 26, true);
+      // the first hit at or after this line's start, if it lies inside the line
+      let lo = 0;
+      let hi = offs.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (offs[mid] < at) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let k = lo; k < offs.length && offs[k] <= at + Math.max(len, 1) - 1; k++) {
+        if (sorted[k].ts) continue;
+        sorted[k].ts = fmtClock(base + dv.getUint32(i + 12, true));
+        left--;
+      }
+      if (!left) return;
+    }
+    carry = buf.slice(i);
+    bufStart += i;
+    next = bufStart;
+  }
+}
+
+/** What an assert record gave, for the Files list. */
+function recordFields(r: AssertRecord) {
+  const got = [
+    r.source && "where",
+    r.expression && "the failed check",
+    r.message && "the message",
+    r.task && "the task",
+    r.exception && "the exception",
+    r.ts && "the time",
+    r.version && "the software version",
+    r.registers.length && `${r.registers.length} registers`,
+    r.stack.length && `${r.stack.length} call stack frames`,
+  ].filter(Boolean) as string[];
+  return got.length ? got.join(", ") : "no known field (the whole text is kept)";
+}
+
+function groupLines(lines: CrashLine[]): CrashGroup[] {
+  const by = new Map<string, CrashGroup>();
+  for (const l of lines) {
+    const norm = l.text.replace(/0x[0-9a-f]+/gi, "0x_").replace(/\d+/g, "#").replace(/\s+/g, " ").trim().toLowerCase();
+    const key = `${l.kind}|${norm}`;
+    let g = by.get(key);
+    if (!g) {
+      g = { kind: l.kind, strong: l.strong, text: l.text, files: {}, count: 0, first: l.ts ?? null, last: l.ts ?? null };
+      by.set(key, g);
+    }
+    g.files[l.file] = (g.files[l.file] ?? 0) + 1;
+    if (l.ts) {
+      if (!g.first || l.ts < g.first) g.first = l.ts;
+      if (!g.last || l.ts > g.last) g.last = l.ts;
+    }
+  }
+  // the same trace is in the .logel and in Logel's decoded copy: count it once
+  for (const g of by.values()) g.count = Math.max(...Object.values(g.files));
+  return [...by.values()].sort((a, b) => Number(b.strong) - Number(a.strong) || (a.first ?? "~").localeCompare(b.first ?? "~") || b.count - a.count).slice(0, 400);
+}
+
 export async function prepareCapture(src: CaptureSource, onStep: (text: string) => void): Promise<Prepared> {
   const files: CaptureFile[] = [];
   const device: Record<string, string> = {};
@@ -292,18 +463,36 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
   let span: Capture["span"];
   const texts: string[] = [];
   const hasLogel = src.files.some((f) => /\.logel$/i.test(f.name) && f.size > 0);
+  const crashLines: CrashLine[] = [];
+  const events: AssertRecord[] = [];
+  const searched: string[] = [];
+  let base: LogelResult["base"] = { ps: null, phy: null };
 
   const add = (f: SourceFile, role: FileRole, label: string, reason: string, detail?: string) =>
     files.push({ path: f.path, name: f.name, size: f.size, role, label, reason, detail });
+  const found = (hits: CrashLine[]) => {
+    const strong = hits.filter((h) => h.strong).length;
+    return hits.length
+      ? `Searched: ${strong ? `${strong} assert or crash ${strong === 1 ? "line" : "lines"}` : "no assert or crash"}${hits.length > strong ? `, ${hits.length - strong} ${hits.length - strong === 1 ? "line mentions" : "lines mention"} one` : ""}.`
+      : "Searched: no assert or crash.";
+  };
+  /** search a file's contents, whatever its size */
+  const search = async (f: SourceFile, data?: Uint8Array) => {
+    searched.push(f.name);
+    if (data) return scanBytes(data, f.name);
+    return scanStream(f, (done) => onStep(`Searching ${f.name} for asserts and crashes (${sizeText(done)} of ${sizeText(f.size)})`));
+  };
 
-  // small files first (fast), the big .logel last
-  const order = [...src.files].sort((a, b) => Number(/\.logel$/i.test(a.name)) - Number(/\.logel$/i.test(b.name)));
+  // the .logel first: its clock dates every other file; then small files before large ones
+  const order = [...src.files].sort((a, b) => Number(!/\.logel$/i.test(a.name)) - Number(!/\.logel$/i.test(b.name)) || a.size - b.size);
+  const traceHits: { f: SourceFile; hits: CrashLine[] }[] = [];
   for (const f of order) {
-    const rule = RULES.find((r) => r.test.test(f.path) || r.test.test(f.name));
-    if (!rule) {
-      add(f, "skipped", "Other file", "Not a log type this decoder reads.");
-      continue;
-    }
+    const rule = RULES.find((r) => r.test.test(f.name)) ?? {
+      test: /./,
+      role: "info" as FileRole,
+      label: "Other file",
+      reason: `No reader of its own. ${SEARCHED}`,
+    };
     if (f.size === 0) {
       add(f, "skipped", rule.label, "Empty: the tool created it but nothing was logged to it.");
       continue;
@@ -317,15 +506,20 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
         onStep(`Reading ${f.name} (${sizeText(f.size)})`);
         const data = await f.read();
         if (!isLogel(data.subarray(0, 64))) {
-          add(f, "skipped", rule.label, "Not in the Logel format this page reads (UNISOC armlog).");
+          const hits = await search(f, data);
+          crashLines.push(...hits);
+          add(f, "info", rule.label, "Not in the Logel format this page reads (UNISOC armlog).", found(hits));
           continue;
         }
-        onStep(`Finding RRC and NAS messages in ${f.name}`);
+        onStep(`Finding RRC and NAS messages, asserts and crashes in ${f.name}`);
         await new Promise((r) => setTimeout(r, 0));
-        const res: LogelResult = parseLogel(data);
+        const res: LogelResult = parseLogel(data, 5000, f.name);
+        searched.push(f.name);
         records.push(...res.records);
         radio.push(...res.radio);
         at.push(...res.at);
+        crashLines.push(...res.crash);
+        if (res.base.ps !== null) base = res.base;
         Object.entries(res.device).forEach(([k, v]) => (device[k] ??= v));
         span = { date: res.date, start: res.start, end: res.end };
         if (res.truncated) notes.push(`${f.name} ends part way through a packet: the log may have been cut short.`);
@@ -334,18 +528,56 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
           res.at.length ? `${res.at.length} AT answers` : null,
           res.radio.length ? `${res.radio.length} radio samples` : null,
         ].filter(Boolean);
-        add(f, "analysed", rule.label, rule.reason, `${bits.join(", ")}. ${res.internal} internal modem messages left out.`);
+        add(f, "analysed", rule.label, rule.reason, `${bits.join(", ")}. ${res.internal} internal modem messages left out. ${found(res.crash)}`);
         continue;
       }
-      const data = await f.read();
+      if (rule.label === "Trace index") {
+        add(f, "info", rule.label, rule.reason);
+        continue;
+      }
+      if (rule.label === "Modem assert record" || rule.label === "Crash evidence") {
+        onStep(`Reading the crash record ${f.name}`);
+        const isDump = DUMP.test(f.name);
+        const data = f.size <= IN_MEMORY ? await f.read() : undefined;
+        const hits = await search(f, data);
+        const text = data ? fileText(data, isDump ? 4 * MB : data.length).text : hits.map((h) => h.text).join("\n");
+        if (rule.label === "Modem assert record" || looksLikeAssert(text) || hits.some((h) => h.strong)) {
+          // the record is the event: its own lines are not counted again as crash lines
+          const rec = parseAssert(text || (data ? printableStrings(data.subarray(0, 4 * MB)) : ""), f.name, { fromDump: isDump });
+          events.push(rec);
+          add(f, "analysed", rule.label, rule.reason, `${rec.title}${rec.ts ? ` at ${rec.ts}` : ""}. Read field by field: ${recordFields(rec)}.`);
+        } else if (isDump) {
+          crashLines.push(...hits);
+          events.push({ file: f.name, kind: "reset", title: "Modem memory dump saved", registers: [], stack: [], raw: "", fromDump: true });
+          add(f, "analysed", "Memory dump", "The modem saves one when it crashes (or when one is taken by hand). Its contents need UNISOC's tools; its text is searched.", found(hits));
+        } else {
+          // named like crash output, but nothing in it shows one
+          crashLines.push(...hits);
+          add(f, "info", "Other file", `Named like crash output, but it records no assert or crash. ${SEARCHED}`, found(hits));
+        }
+        continue;
+      }
+      const big = f.size > IN_MEMORY;
+      const data = big ? undefined : await f.read();
+      if (rule.label === "Logel decoded traces" || big || !data) {
+        onStep(`Searching ${f.name} for asserts and crashes`);
+        const hits = await search(f, data);
+        crashLines.push(...hits);
+        if (rule.label === "Logel decoded traces") traceHits.push({ f, hits });
+        add(f, rule.role === "check" ? "info" : (rule.role as FileRole), rule.label, rule.reason, found(hits));
+        continue;
+      }
+      const hits = await search(f, data);
+      crashLines.push(...hits);
+      const scanNote = found(hits);
       if (rule.label === "IP packets") {
         const s = summarizePcap(data);
-        if (!s) add(f, "skipped", rule.label, "Not a pcap file this page reads.");
+        if (!s) add(f, "info", rule.label, "Not a pcap file this page reads.", scanNote);
         else if (!s.packets) add(f, "skipped", rule.label, "Empty: no packets were captured.");
         else {
           if (!ip || s.packets > ip.packets) ip = s;
           add(f, "analysed", rule.label, rule.reason,
-            `${s.packets} packets (${s.ul} up, ${s.dl} down), ${s.dns.length} DNS ${s.dns.length === 1 ? "lookup" : "lookups"}.`);
+            `${s.packets} packets (${s.ul} up, ${s.dl} down), ${s.dns.length} DNS ${s.dns.length === 1 ? "lookup" : "lookups"}. ${scanNote}`);
         }
         continue;
       }
@@ -355,7 +587,7 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
         if (!pts.length) add(f, "skipped", rule.label, "Only the column titles: the modem logged no measurements here.");
         else {
           radio.push(...pts);
-          add(f, "analysed", rule.label, rule.reason, `${pts.length} samples.`);
+          add(f, "analysed", rule.label, rule.reason, `${pts.length} samples. ${scanNote}`);
         }
         continue;
       }
@@ -375,20 +607,47 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
         if (/\.lst$/i.test(f.name)) parseLst(text, device);
         else if (/_modem\.ini$/i.test(f.name)) parseIni(text, device);
         else if (/_log_stat\.txt$/i.test(f.name)) stats = parseStats(text);
-        add(f, "info", rule.label, rule.reason);
+        add(f, "info", rule.label, rule.reason, hits.length ? scanNote : undefined);
         continue;
       }
       // text exports: decode them only when there is no .logel (it holds the same messages)
       if (HEX_LINE.test(text)) {
-        if (hasLogel) add(f, "skipped", rule.label, "The .logel already holds these messages.");
+        if (hasLogel) add(f, "info", rule.label, "The .logel already holds these messages.", scanNote);
         else {
           texts.push(text);
-          add(f, "analysed", rule.label, rule.reason);
+          add(f, "analysed", rule.label, rule.reason, scanNote);
         }
-      } else add(f, "skipped", rule.label, "No hex messages in it.");
+      } else add(f, "info", rule.label, `No hex messages in it. ${SEARCHED}`, scanNote);
     } catch (e) {
       add(f, "skipped", rule.label, `Could not be read: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  // time the decoded trace lines with Logel's trace index (traceview.pbs beside traceview.dat)
+  for (const { f, hits } of traceHits) {
+    if (!hits.length) continue;
+    const pbsPath = f.path.replace(/\.dat$/i, ".pbs");
+    const pbs = src.files.find((x) => x.path === pbsPath);
+    if (!pbs) continue;
+    onStep(`Timing the assert and crash lines found in ${f.name}`);
+    try {
+      await timeTraceLines(pbs, hits, /phytraceview/i.test(f.name) ? (base.phy ?? base.ps) : base.ps);
+    } catch {
+      /* leave them untimed */
+    }
+  }
+  // an assert record without its own time takes the time of the first strong line that names the same place
+  for (const e of events) {
+    if (e.ts || !e.where) continue;
+    const src0 = e.source?.split("/").pop()?.toLowerCase();
+    const hit = crashLines.find((l) => l.strong && l.ts && src0 && l.text.toLowerCase().includes(src0));
+    if (hit) e.ts = hit.ts;
+  }
+  // a memory dump usually holds the same assert as the .ass record: keep the record, once
+  const unique: AssertRecord[] = events.filter((e) => !e.fromDump);
+  for (const d of events.filter((e) => e.fromDump)) {
+    if (d.where ? unique.some((k) => k.where === d.where) : unique.length > 0) continue;
+    unique.push(d);
   }
 
   const rank: Record<FileRole, number> = { analysed: 0, info: 1, skipped: 2 };
@@ -405,6 +664,7 @@ export async function prepareCapture(src: CaptureSource, onStep: (text: string) 
     files,
     span,
     notes,
+    crashes: { events: unique, groups: groupLines(crashLines), searched, lines: crashLines.length },
   };
   return { capture, text: texts.length ? texts.join("\n\n") : undefined };
 }

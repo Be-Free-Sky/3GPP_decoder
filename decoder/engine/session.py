@@ -453,7 +453,9 @@ def _dedupe(findings):
         out.append(g)
     # A generic "<procedure> failed" adds nothing when a specific critical finding
     # already explains the message that ended the procedure.
-    specific_refs = {r for f in out if f["severity"] == "critical" and not f.get("procedure") for r in f.get("refs", [])}
+    # (a crash points at the message before it, which it does not explain)
+    specific_refs = {r for f in out if f["severity"] == "critical" and not f.get("procedure") and f.get("category") != "crash"
+                     for r in f.get("refs", [])}
     return [f for f in out if not (f.get("procedure") and f.get("refs") and f["refs"][-1] in specific_refs)]
 
 
@@ -562,7 +564,10 @@ def _narrative(items, procs, findings):
     if crit:
         # earliest failure wins; on a tie prefer correlated findings (more refs) over single-message ones
         # findings without a message (capture AT / trace facts) come after the ones tied to a message
-        first = sorted(crit, key=lambda f: (f["refs"][0] if f.get("refs") else 10 ** 9, -len(f.get("refs", []))))[0]
+        # a modem assert or crash explains everything after it: it is the root whenever there is one
+        # (the earliest one by its logged time)
+        first = sorted(crit, key=lambda f: (f.get("category") != "crash", f.get("at") or "~" if f.get("category") == "crash" else "",
+                                            f["refs"][0] if f.get("refs") else 10 ** 9, -len(f.get("refs", []))))[0]
         root = {"title": first["title"], "detail": first.get("detail"), "refs": first.get("refs", []),
                 "checks": first.get("checks", []), "causes": first.get("causes", [])}
     return {"steps": lines[:40], "root": root}

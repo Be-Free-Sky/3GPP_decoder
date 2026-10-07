@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BugIcon,
   ChartLineIcon,
   CircleNotchIcon,
   FilesIcon,
@@ -13,7 +14,7 @@ import {
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { engine } from "@/lib/engine/client";
-import type { CaptureInfo, Report, SplitMode } from "@/lib/engine/types";
+import { crashFound, searchedCount, type CaptureInfo, type Report, type SplitMode } from "@/lib/engine/types";
 import { splitLogs, type CaptureSource } from "@/lib/capture";
 import { analyseLog, fleetOverview, logVerdict, type FleetLog } from "@/lib/fleet";
 import { downloadFile, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
@@ -41,11 +42,12 @@ import { RadioView } from "./radio-view";
 import { ContextView } from "./context-view";
 import { FilesView } from "./files-view";
 import { FleetView } from "./fleet-view";
+import { CrashView } from "./crash-view";
 import { SiteFooter } from "./brand";
 import { useEngineState } from "./engine-status";
 import { cn } from "@/lib/utils";
 
-type Tab = "fleet" | "summary" | "flow" | "messages" | "radio" | "context" | "files";
+type Tab = "fleet" | "summary" | "flow" | "messages" | "radio" | "context" | "crashes" | "files";
 type View = "home" | "results";
 type Source = { title: string; chip?: string };
 
@@ -71,8 +73,9 @@ function ResultSkeleton({ phase }: { phase?: string | null }) {
   );
 }
 
-/** Where a fresh report opens: the summary of a session, or the message itself. */
-const startTab = (rep: Report): Tab => (rep.messages.length > 1 && rep.session ? "summary" : "messages");
+/** Where a fresh report opens: the summary of a session, the message itself, or the crash when that is all there is. */
+const startTab = (rep: Report): Tab =>
+  rep.messages.length > 1 && rep.session ? "summary" : crashFound(rep.capture?.crashes) || !rep.messages.length ? "crashes" : "messages";
 const firstIssue = (rep: Report) => rep.messages.find((m) => worstSeverity(m.result))?.index ?? 0;
 
 /** A shared HTML report: this app opened on a finished analysis, with no decoder and no home page. */
@@ -283,7 +286,14 @@ export function DecoderApp() {
       icon: ListMagnifyingGlassIcon,
       n: report.messages.length > 1 ? report.messages.length : undefined,
     };
-    const files: TabDef<Tab>[] = report.capture?.files?.length ? [{ id: "files", label: "Files", icon: FilesIcon, n: report.capture.files.length }] : [];
+    // every file of a capture is searched for asserts: the tab says so even when none was found
+    const crashes = report.capture?.crashes;
+    const crashN = crashes ? crashes.events.length || crashes.groups.filter((g) => g.strong).length : 0;
+    const files: TabDef<Tab>[] = [
+      ...(searchedCount(crashes) ? [{ id: "crashes" as Tab, label: "Asserts", icon: BugIcon, n: crashN || undefined, alert: crashN > 0 }] : []),
+      ...(report.capture?.files?.length ? [{ id: "files" as Tab, label: "Files", icon: FilesIcon, n: report.capture.files.length }] : []),
+    ];
+    if (!report.messages.length) return [...files, ...(report.session ? [{ id: "context" as Tab, label: "Context", icon: IdentificationCardIcon }] : [])];
     if (!report.session) return [msgs, ...files];
     if (report.messages.length <= 1) return [msgs, { id: "context", label: "Context", icon: IdentificationCardIcon }, ...files];
     const t: TabDef<Tab>[] = [
@@ -303,7 +313,7 @@ export function DecoderApp() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
-      if (view !== "results" || !report || tab === "fleet" || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (view !== "results" || !report?.messages.length || tab === "fleet" || e.ctrlKey || e.metaKey || e.altKey) return;
       if (el.closest("input, textarea, [role=listbox], [contenteditable]")) return;
       if (e.key === "j" || e.key === "k") {
         setSelected((s) => Math.max(0, Math.min(report.messages.length - 1, s + (e.key === "j" ? 1 : -1))));
@@ -453,7 +463,7 @@ export function DecoderApp() {
         {decoding && !report ? <ResultSkeleton phase={phase} /> : null}
         {failedCapture && !report ? <FilesView capture={failedCapture} /> : null}
         {onFleet ? <FleetView logs={fleet!} onOpen={openFleetLog} /> : null}
-        {report && entry && !onFleet ? (
+        {report && !onFleet ? (
           <>
             {tab === "summary" && report.session ? (
               <SummaryView
@@ -465,8 +475,9 @@ export function DecoderApp() {
               />
             ) : null}
             {tab === "files" && report.capture ? <FilesView capture={report.capture} /> : null}
+            {tab === "crashes" && report.capture ? <CrashView capture={report.capture} messages={report.messages} onOpen={openMessage} /> : null}
             {tab === "flow" && report.session ? <FlowView session={report.session} selected={selected} onOpen={openMessage} /> : null}
-            {tab === "messages" ? (
+            {tab === "messages" && entry ? (
               <div className={cn("grid grid-cols-1 items-start gap-4", multi && "lg:grid-cols-[340px_minmax(0,1fr)] xl:grid-cols-[380px_minmax(0,1fr)]")}>
                 {multi ? (
                   <aside className="surface flex max-h-[46vh] min-h-0 flex-col overflow-hidden rounded-2xl lg:sticky lg:top-[124px] lg:max-h-[calc(100dvh-140px)]">

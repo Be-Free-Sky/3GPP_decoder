@@ -34,6 +34,10 @@ export interface RadioSample {
 }
 
 export interface LogelResult {
+  /** assert, crash, exception and reset lines anywhere in the file, every stream included */
+  crash: CrashLine[];
+  /** log time of a tick: protocol stack stream, and the PHY stream when it has its own clock */
+  base: { ps: number | null; phy: number | null };
   records: LogelRecord[];
   radio: RadioSample[];
   at: { ts: string | null; line: string }[];
@@ -46,6 +50,8 @@ export interface LogelResult {
   date: string | null;
   truncated: boolean;
 }
+
+import { scanText, type CrashLine } from "./crash";
 
 const NR_RRC: Record<number, string> = {
   1: "bcch-bch",
@@ -150,7 +156,7 @@ export function isLogel(head: Uint8Array) {
   return L >= 8 && L < 1 << 20 && dv.getUint16(8, true) === L && head[10] === 0xd1;
 }
 
-export function parseLogel(data: Uint8Array, maxRecords = 5000): LogelResult {
+export function parseLogel(data: Uint8Array, maxRecords = 5000, fileName = "the .logel"): LogelResult {
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const streams = new Map<number, Stream>();
   const anchors = new Map<number, number>(); // stream -> base ms (time = base + tick)
@@ -161,6 +167,12 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000): LogelResult {
   let off = 0;
   let packets = 0;
   let truncated = false;
+  // every packet's place in the file and the stream tick it belongs to, to time crash lines
+  const pOff: number[] = [];
+  const pTick: number[] = [];
+  const pSub: number[] = [];
+  let curTick = 0;
+  let curSub = -1;
   while (off + 12 <= data.length) {
     const L = dv.getUint32(off, true);
     if (L < 8 || off + 4 + L > data.length) {
@@ -172,6 +184,8 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000): LogelResult {
     packets++;
     if (type === 0xf8 && L >= 32) {
       const tick = dv.getUint32(off + 20, true);
+      curTick = tick;
+      curSub = sub;
       let s = streams.get(sub);
       if (!s) {
         s = { sub, parts: [], ticks: [], size: 0 };
@@ -194,9 +208,44 @@ export function parseLogel(data: Uint8Array, maxRecords = 5000): LogelResult {
     } else if (type === 0x00 && sub === 0x00 && L > 8) {
       device += new TextDecoder("latin1").decode(data.subarray(off + 12, off + 4 + L));
     }
+    pOff.push(off);
+    pTick.push(curTick);
+    pSub.push(curSub);
     off += 4 + L;
   }
-  return extract(data, streams, anchors, sync, device, packets, truncated, maxRecords);
+  const res = extract(data, streams, anchors, sync, device, packets, truncated, maxRecords);
+
+  // Search the whole file, every stream, for assert / crash / reset text, and time each hit.
+  const baseOf = (sub: number) => (sync && sync.sub === sub ? sync.base : anchors.get(sub) ?? null);
+  const psSub = res.psSub;
+  const phySub = [...streams.values()].filter((x) => x.sub !== psSub).sort((a, b) => b.size - a.size)[0]?.sub;
+  res.base = { ps: psSub != null ? baseOf(psSub) : null, phy: phySub != null ? baseOf(phySub) : null };
+  const dec = new TextDecoder("latin1");
+  const WIN = 16 * 1024 * 1024;
+  const OVER = 1024;
+  let lastEnd = -1;
+  for (let w = 0; w < data.length; w += WIN) {
+    const from = Math.max(0, w - OVER);
+    const text = dec.decode(data.subarray(from, Math.min(data.length, w + WIN)));
+    for (const hit of scanText(text, fileName, from)) {
+      if (hit.offset <= lastEnd) continue;
+      lastEnd = hit.offset;
+      let lo = 0;
+      let hi = pOff.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (pOff[mid] <= hit.offset) lo = mid;
+        else hi = mid - 1;
+      }
+      const sub = pSub[lo] >= 0 ? pSub[lo] : psSub ?? -1;
+      const base = baseOf(sub) ?? res.base.ps;
+      hit.ts = base !== null && pTick[lo] ? fmtClock(base + pTick[lo]) : null;
+      res.crash.push(hit);
+    }
+    if (res.crash.length > 5000) break;
+  }
+  delete (res as { psSub?: number }).psSub;
+  return res;
 }
 
 function extract(
@@ -208,13 +257,14 @@ function extract(
   packets: number,
   truncated: boolean,
   maxRecords: number,
-): LogelResult {
+): LogelResult & { psSub?: number } {
   const records: LogelRecord[] = [];
   const radio: (RadioSample & { tick: number })[] = [];
   const at: { ts: string | null; line: string; tick: number }[] = [];
   let internal = 0;
   let minMs = Infinity;
   let maxMs = -Infinity;
+  let psSub: number | undefined;
   for (const s of streams.values()) {
     // Only protocol stack streams carry signal items; skip the rest (the PHY stream can be 90 % of the file).
     if (!s.parts.some(([o, len]) => findSignals(data.subarray(o, o + len), 1).length)) continue;
@@ -228,6 +278,7 @@ function extract(
     }
     s.buf = buf;
     s.starts = starts;
+    psSub ??= s.sub;
     const base = sync && sync.sub === s.sub ? sync.base : anchors.get(s.sub) ?? null;
     const tickAt = (p: number) => {
       let lo = 0;
@@ -356,6 +407,9 @@ function extract(
   // keep the radio series to a chartable size
   const step = Math.max(1, Math.ceil(radio.length / 1500));
   return {
+    crash: [],
+    base: { ps: null, phy: null },
+    psSub,
     records,
     radio: radio.filter((_, i) => i % step === 0).map(withoutTick),
     at: at.map(withoutTick),

@@ -5,7 +5,7 @@
 
 import { prepareCapture, type CaptureSource } from "@/lib/capture";
 import { engine } from "@/lib/engine/client";
-import type { CaptureInfo, Report } from "@/lib/engine/types";
+import { crashFound, type CaptureInfo, type Report } from "@/lib/engine/types";
 import { buildHeadline } from "@/lib/areas";
 import { fmtMs } from "@/lib/format";
 
@@ -34,11 +34,22 @@ export interface LogResult {
 export async function analyseLog(cap: CaptureSource, onStep: (text: string) => void): Promise<LogResult> {
   const prepared = await prepareCapture(cap, onStep);
   const c = prepared.capture;
-  const info: CaptureInfo = { name: c.name, kind: c.kind, files: c.files, device: c.device, ip: c.ip, stats: c.stats, span: c.span, notes: c.notes };
-  if (c.records.length) {
-    onStep(`Decoding ${c.records.length} RRC and NAS messages`);
+  const info: CaptureInfo = {
+    name: c.name,
+    kind: c.kind,
+    files: c.files,
+    device: c.device,
+    ip: c.ip,
+    stats: c.stats,
+    span: c.span,
+    notes: c.notes,
+    crashes: c.crashes,
+  };
+  // an assert or crash is reported even when the log holds no messages beside it
+  if (c.records.length || crashFound(c.crashes)) {
+    onStep(c.records.length ? `Decoding ${c.records.length} RRC and NAS messages` : "Analysing the assert and crash records");
     const report = await engine.decodeCapture(c);
-    return report.messages.length ? { report, info } : { info, error: "No RRC or NAS messages were found in this log." };
+    return report.messages.length || report.session ? { report, info } : { info, error: "No RRC or NAS messages were found in this log." };
   }
   if (prepared.text) {
     onStep("Decoding the text export");
@@ -102,6 +113,11 @@ export function logFacts(l: FleetLog) {
     const net = r.session?.context.network ?? [];
     const op = net.find((c) => c.label === "Operator")?.value ?? net.find((c) => c.label === "PLMN")?.hint?.split(", ").pop();
     if (op) out.push(op);
+  }
+  const crashes = l.info?.crashes;
+  if (crashFound(crashes)) {
+    const n = crashes!.events.length || crashes!.groups.filter((g) => g.strong).length;
+    out.push(`${n} ${n === 1 ? "assert or crash" : "asserts or crashes"}`);
   }
   const files = l.info?.files;
   if (files?.length) out.push(`${files.filter((f) => f.role === "analysed").length} of ${files.length} files used`);

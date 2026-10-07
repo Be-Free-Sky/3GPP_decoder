@@ -16,8 +16,10 @@ import { buildAreas, buildHeadline, type AreaStatus } from "@/lib/areas";
 import { carriedTitle, directionLabel, fmtMs, protocolShort, worstSeverity } from "@/lib/format";
 import { SKYWORTH_LOGO_SVG } from "@/components/app/skyworth-logo";
 import { fleetOverview, logFacts, logVerdict, type FleetLog, type Tone as LogTone } from "@/lib/fleet";
+import { KIND_LABEL, SURE, crashCounts, crashHeadline, dumpOnly, messagesBefore } from "@/lib/crashes";
+import { searchedCount, type AssertRecord, type CrashGroup } from "@/lib/engine/types";
 
-export type ReportTab = "summary" | "flow" | "messages" | "radio" | "context" | "files";
+export type ReportTab = "summary" | "flow" | "messages" | "radio" | "context" | "crashes" | "files";
 
 export const TAB_TITLE: Record<ReportTab, string> = {
   summary: "Summary",
@@ -25,6 +27,7 @@ export const TAB_TITLE: Record<ReportTab, string> = {
   messages: "Messages",
   radio: "Radio",
   context: "Context",
+  crashes: "Asserts",
   files: "Files",
 };
 
@@ -275,6 +278,7 @@ function summaryHtml(report: Report) {
       { top: TONE[tone].mark, pad: "20px 22px" },
     ),
   );
+  if (report.capture?.crashes && crashHeadline(report.capture.crashes).found) out.push(crashSummaryHtml(report));
   const areas = buildAreas(report).map((a) => {
     const t = AREA_TONE[a.status];
     return card(
@@ -638,6 +642,151 @@ function contextHtml(report: Report) {
   return grid(cards, 2);
 }
 
+// --- asserts and crashes ------------------------------------------------------------------------
+
+function crashSummaryHtml(report: Report) {
+  const c = report.capture!.crashes!;
+  const n = crashCounts(c);
+  const rows = c.events.length
+    ? c.events.map((e) => [
+        `<b>${esc(e.title)}</b><div style="${MONO}font-size:12px;color:${C.ink2}">${esc([e.task && `task ${e.task}`, e.expression].filter(Boolean).join(": ") || e.file)}</div>`,
+        chip(dumpOnly(e) ? "Memory dump" : KIND_LABEL[e.kind], "bad"),
+        mono(esc(e.ts ?? ""), C.ink2),
+      ])
+    : n.strong.slice(0, 3).map((g) => [`${mono(esc(g.text))}`, chip(KIND_LABEL[g.kind], SURE.includes(g.kind) ? "bad" : "warn"), mono(esc(g.first ?? ""), C.ink2)]);
+  return card(
+    head(
+      "The modem crashed",
+      `${n.records ? `${n.records} assert ${n.records === 1 ? "record" : "records"}` : "No assert record"}, ${n.strongLines} assert or crash ${n.strongLines === 1 ? "line" : "lines"} in ${n.searched} files searched.`,
+      "&#9888;",
+    ) + dataTable(["What", "Kind", "Time"], rows),
+    { top: C.bad },
+  );
+}
+
+function crashGroupsHtml(groups: CrashGroup[]) {
+  return dataTable(
+    ["Kind", "Line in the log", "First seen", "Times", "Found in"],
+    groups.map((g) => [
+      chip(KIND_LABEL[g.kind], g.strong ? (SURE.includes(g.kind) ? "bad" : "warn") : "neutral"),
+      mono(esc(g.text)),
+      mono(esc(`${g.first ?? "n/a"}${g.last && g.last !== g.first ? ` to ${g.last}` : ""}`), C.ink2),
+      mono(`<b>${g.count}</b>`),
+      mono(Object.entries(g.files).map(([f, k]) => `${esc(f)}${k > 1 ? ` x${k}` : ""}`).join("<br>"), C.ink2),
+    ]),
+    ["left", "left", "left", "right", "left"],
+  );
+}
+
+function crashEventHtml(e: AssertRecord, report: Report, ctx: Ctx) {
+  const fields: [string, string][] = [];
+  if (e.source) fields.push(["Where it stopped", mono(`<b>${esc(e.source)}</b>${e.line ? ` <b style="color:${C.badInk}">line ${e.line}</b>` : ""}`)]);
+  if (e.module) fields.push(["Modem part", esc(e.module)]);
+  if (e.task) fields.push(["Task", mono(`<b>${esc(e.task)}</b>`)]);
+  if (e.expression) fields.push(["Check that failed", mono(`<b>${esc(e.expression)}</b>`)]);
+  if (e.message) fields.push(["Message", esc(e.message)]);
+  if (e.exception) fields.push(["Exception", esc(e.exception)]);
+  if (e.ts) fields.push(["Time", mono(esc(e.ts))]);
+  if (e.version) fields.push(["Software", mono(esc(e.version))]);
+  const before = messagesBefore(report.messages, e.ts);
+  const regs = e.registers.length
+    ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">Registers</div>${grid(
+        e.registers.map((r) => table(`<tr><td style="padding:4px 8px;background:${C.panel2};border:1px solid ${C.line};border-radius:8px;${MONO}font-size:12px"><span style="color:${C.muted}">${esc(r.name)}</span>&nbsp; <b style="color:${C.ink}">${esc(r.value)}</b></td></tr>`, "margin:0 0 6px 0;")),
+        4,
+        8,
+      )}`
+    : "";
+  const stack = e.stack.length
+    ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">Call stack (${e.stack.length} ${e.stack.length === 1 ? "frame" : "frames"}, innermost first)</div>${table(
+        `<tr><td style="padding:8px 12px;background:${C.panel2};border:1px solid ${C.line};border-radius:10px;${MONO}font-size:12px;line-height:1.6;color:${C.ink}">${e.stack
+          .slice(0, 64)
+          .map((f, i) => (/^(#\d+|\[\s*\d+\s*\])/.test(f) ? esc(f) : `<span style="color:${C.muted}">${String(i).padStart(2, "\u00a0")}</span>&nbsp; ${esc(f)}`))
+          .join("<br>")}</td></tr>`,
+      )}`
+    : "";
+  const rawLines = e.raw.split("\n");
+  const raw = e.raw
+    ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">The whole record, as written${
+        !ctx.file && rawLines.length > 80 ? ` (first 80 of ${rawLines.length} lines)` : ""
+      }</div>${table(
+        `<tr><td style="padding:8px 12px;background:${C.panel2};border:1px solid ${C.line};border-radius:10px;${MONO}font-size:11.5px;line-height:1.5;color:${C.ink2};white-space:pre-wrap;word-break:break-all">${esc(
+          (ctx.file ? rawLines : rawLines.slice(0, 80)).join("\n"),
+        )}</td></tr>`,
+      )}`
+    : "";
+  const body = dumpOnly(e)
+    ? para("The modem writes this file only when it crashes. It holds no readable assert text; UNISOC's tools read the cause from it, so send it with the .logel.")
+    : dataTable(
+        ["Field", "Value"],
+        fields.map(([k, v]) => [`<span style="color:${C.muted}">${k}</span>`, v]),
+      );
+  return card(
+    `<div style="${FONT}font-size:17px;font-weight:700;color:${C.ink}">${esc(e.title)}</div>${space(6)}${chip(dumpOnly(e) ? "Memory dump" : KIND_LABEL[e.kind], "bad")}${chip(esc(e.file), "neutral", true)}${
+      e.ts ? chip(`at ${esc(e.ts)}`, "neutral", true) : ""
+    }${space(6)}${body}${
+      before.length
+        ? `<div style="${FONT}font-size:13px;font-weight:700;color:${C.ink};margin:12px 0 6px">Just before it in the log</div>${dataTable(
+            ["Time", "Message", ""],
+            before.map((m) => [mono(esc(m.timestamp ?? ""), C.ink2), `<b>${esc(m.result.ok ? m.result.message?.title : "Could not decode")}</b>`, ref(m.index)]),
+            ["left", "left", "right"],
+          )}`
+        : ""
+    }${regs}${stack}${raw}`,
+    { top: C.bad },
+  );
+}
+
+function crashesHtml(report: Report, ctx: Ctx) {
+  const c = report.capture?.crashes;
+  if (!c) return card(para("This decode did not come from a log capture, so no file was searched for asserts."));
+  const h = crashHeadline(c);
+  const n = h.n;
+  const tone: Tone = h.found ? "bad" : "ok";
+  const stat = (label: string, v: number, bad = false) =>
+    table(
+      `<tr><td style="padding:9px 12px;background:${C.panel2};border:1px solid ${C.line};border-radius:12px;${FONT}"><div style="font-size:12px;color:${C.muted}">${label}</div><div style="${MONO}font-size:20px;font-weight:700;color:${bad && v ? C.badInk : C.ink}">${v}</div></td></tr>`,
+    );
+  const out = [
+    card(
+      `${chip(esc(h.kick), tone)}<div style="${FONT}font-size:22px;line-height:1.3;font-weight:700;color:${C.ink};margin:8px 0 0 0">${esc(h.head)}</div>${para(esc(h.detail), "font-size:15px")}${
+        h.todo ? box(`<b style="color:${C.okInk}">&#10003; What to do</b>&nbsp;&nbsp;${esc(h.todo)}`, "ok") : ""
+      }${space(12)}${grid([stat("Assert records", n.records, true), stat("Crash lines", n.strongLines, true), stat("Mentions", n.weakLines), stat("Files searched", n.searched)], 4, 8)}`,
+      { top: TONE[tone].mark, pad: "20px 22px" },
+    ),
+    ...c.events.map((e) => crashEventHtml(e, report, ctx)),
+  ];
+  if (n.strong.length)
+    out.push(
+      card(
+        head("Assert and crash lines", "Every line that shows an assert, exception, watchdog, reset or memory failure, grouped when the same line repeats.", "&#9776;") +
+          crashGroupsHtml(n.strong),
+      ),
+    );
+  if (n.weak.length)
+    out.push(
+      card(
+        head(
+          `${n.weakLines} ${n.weakLines === 1 ? "line mentions" : "lines mention"} an assert or crash in passing`,
+          "Trace words, not proof of a crash. Kept so nothing is missed.",
+          "i",
+        ) + crashGroupsHtml(ctx.file ? n.weak : n.weak.slice(0, 40)),
+      ),
+    );
+  if (c.searched.length)
+    out.push(
+      card(
+        head("Files searched", "Each file was read in full, however large, and every line was checked.", "&#9636;") +
+          c.searched
+            .map((f) => {
+              const hit = n.strong.some((g) => g.files[f]) || c.events.some((e) => e.file === f);
+              return chip(esc(f), hit ? "bad" : "neutral", true);
+            })
+            .join(""),
+      ),
+    );
+  return out.join("");
+}
+
 // --- files ----------------------------------------------------------------------------------------
 
 const sizeText = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`);
@@ -715,6 +864,8 @@ function viewBody(report: Report, tab: ReportTab, selected: number, ctx: Ctx) {
       return radioHtml(report, ctx);
     case "context":
       return contextHtml(report);
+    case "crashes":
+      return crashesHtml(report, ctx);
     case "files":
       return filesHtml(report);
   }
@@ -823,6 +974,7 @@ export function fileHtml(report: Report, meta: ReportMeta) {
   sections.push(["messages", `Messages (${report.messages.length})`, card(head("Messages", "Select a message to open its full decode. Open all to print everything.", "&#8801;") + msgs)]);
   if (s && (s.radio.points.length || s.radio.modem?.points.length)) sections.push(["radio", "Radio", radioHtml(report, ctx)]);
   if (s) sections.push(["context", "Context", contextHtml(report)]);
+  if (searchedCount(report.capture?.crashes)) sections.push(["crashes", "Asserts", crashesHtml(report, ctx)]);
   if (report.capture?.files?.length) sections.push(["files", "Files", filesHtml(report)]);
   const nav = sections.map(([id, label]) => `<a href="#${id}">${esc(label)}</a>`).join("");
   const logo = `<svg viewBox="0 0 1800 162" role="img" aria-label="SKYWORTH" style="height:16px;width:178px;display:block">${SKYWORTH_LOGO_SVG}</svg>`;
@@ -879,9 +1031,11 @@ export function embeddedReport(): EmbeddedReport | null {
 
 /** The report to share: the same analysis without the capture's list of files. */
 export function withoutFiles(report: Report): Report {
-  if (!report.capture?.files) return report;
+  if (!report.capture) return report;
   const capture = { ...report.capture };
   delete capture.files;
+  // the asserts page keeps how many files were searched, not their names
+  if (capture.crashes) capture.crashes = { ...capture.crashes, searched: [], searchedCount: searchedCount(capture.crashes) };
   return { ...report, capture };
 }
 
@@ -890,6 +1044,7 @@ export function fleetWithoutFiles(logs: FleetLog[]): FleetLog[] {
   return logs.map((l) => {
     const info = l.info ? { ...l.info } : undefined;
     if (info) delete info.files;
+    if (info?.crashes) info.crashes = { ...info.crashes, searched: [], searchedCount: searchedCount(info.crashes) };
     return { ...l, report: l.report ? withoutFiles(l.report) : undefined, info };
   });
 }

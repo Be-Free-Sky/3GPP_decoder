@@ -24,6 +24,7 @@ import { buildAreas, buildHeadline, type Area, type AreaStatus } from "@/lib/are
 import { fmtMs } from "@/lib/format";
 import { FindingCard } from "./finding-card";
 import { FilesSummary } from "./files-view";
+import { CrashSummary } from "./crash-view";
 import { cn } from "@/lib/utils";
 
 const EASE = [0.23, 1, 0.32, 1] as const;
@@ -164,7 +165,7 @@ export function SummaryView({
   onCopy?: () => void;
   onReport?: () => void;
   onOpen: (i: number) => void;
-  onTab: (t: "flow" | "radio" | "messages" | "files") => void;
+  onTab: (t: "flow" | "radio" | "messages" | "crashes" | "files") => void;
 }) {
   const s = report.session!;
   const reduce = useReducedMotion();
@@ -269,6 +270,8 @@ export function SummaryView({
           ) : null}
         </div>
       </motion.section>
+
+      {report.capture ? <CrashSummary capture={report.capture} onAll={() => onTab("crashes")} /> : null}
 
       <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2 min-[1500px]:grid-cols-4">
         {areas.map((a, i) => (

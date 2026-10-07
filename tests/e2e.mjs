@@ -154,12 +154,21 @@ try {
   const used = await page.locator("li", { hasText: ".logel" }).first().innerText();
   const skipped = await page.locator("li", { hasText: "msgview.dat" }).first().innerText();
   check(/Analysed|Modem log/.test(used) && /RRC and NAS/.test(used), "the .logel is listed as analysed");
-  check(/display cache/.test(skipped), "Logel's view cache is listed as not needed, with the reason");
+  check(/display cache/.test(skipped) && /Searched/.test(skipped), "Logel's view cache is listed with the reason, and searched");
+  const tv = await page.locator("li", { hasText: "traceview.dat" }).first().innerText();
+  check(/decoded traces/i.test(tv) && /no assert or crash, 1 line mentions one/.test(tv), `Logel's decoded traces are searched line by line ("${tv.split("\n").find((l) => /^Searched/.test(l))}")`);
   check((await page.getByText("nosuch.example.net").count()) > 0, "DNS lookups from the IP capture are listed");
   await page.getByRole("tab", { name: /^Radio/ }).click();
   check((await page.getByRole("heading", { name: /Serving cell, from the modem/ }).count()) === 1, "the modem's own radio samples are charted");
   await page.getByRole("tab", { name: /^Messages/ }).click();
   check((await page.getByText("Channel logged by the modem").count()) > 0, "messages use the channel the modem logged");
+  // every file is searched for asserts and crashes; this log has none, and says so
+  await page.getByRole("tab", { name: /^Asserts/ }).click();
+  const noCrash = await page.locator("[data-crash-verdict]").innerText().catch(() => "");
+  check(/No assert or crash/.test(noCrash) && (await page.locator('[data-crash-verdict="ok"]').count()) === 1, "the Asserts page says no assert or crash was found");
+  await page.getByText(/line mentions an assert or crash in passing/).click();
+  const mention = await page.locator('[data-crash-line="weak"]').first().innerText().catch(() => "");
+  check(/assert check passed/.test(mention) && /09:14:00\.300/.test(mention), `a passing mention is listed, timed from Logel's trace index ("${mention.replace(/\s+/g, " ")}")`);
 
   // Copy report: the page on screen as HTML with its colours and cards, charts as images
   const copied = async (tab, n) => {
@@ -209,16 +218,21 @@ try {
   await page.getByRole("button", { name: "Home", exact: true }).click();
   await page.getByRole("tab", { name: /Upload log/ }).click();
   await page.locator("#file-input").setInputFiles(FIXTURE_MULTI);
-  await page.getByRole("button", { name: /Analyse 3 logs/ }).waitFor({ timeout: 20000 });
+  await page.getByRole("button", { name: /Analyse 4 logs/ }).waitFor({ timeout: 20000 });
   const listed = await page.getByRole("list", { name: "Logs found" }).getByRole("listitem").count();
-  check(listed === 3, `the three _armlog folders are found before analysing (${listed})`);
-  await page.getByRole("button", { name: /Analyse 3 logs/ }).click();
+  check(listed === 4, `the four _armlog folders are found before analysing (${listed})`);
+  await page.getByRole("button", { name: /Analyse 4 logs/ }).click();
   const fleetDone = await page
-    .waitForFunction(() => document.querySelectorAll("[data-log]").length === 3 && !document.querySelector('[data-log][data-tone="busy"]'), null, { timeout: 120000 })
+    .waitForFunction(() => document.querySelectorAll("[data-log]").length === 4 && !document.querySelector('[data-log][data-tone="busy"]'), null, { timeout: 120000 })
     .then(() => true)
     .catch(() => false);
   const tones = await page.locator("[data-log]").evaluateAll((els) => els.map((e) => `${e.getAttribute("data-log")}=${e.getAttribute("data-tone")}`));
-  check(fleetDone && tones.join(" ") === "2026_01_15_09_14_00_000_armlog=bad 2026_01_15_10_14_00_000_armlog=bad 2026_01_15_11_14_00_000_armlog=none", `each folder gets its own result (${tones.join(", ")})`);
+  check(
+    fleetDone &&
+      tones.join(" ") ===
+        "2026_01_15_09_14_00_000_armlog=bad 2026_01_15_10_14_00_000_armlog=bad 2026_01_15_11_14_00_000_armlog=none 2026_01_15_12_14_00_000_armlog=bad",
+    `each folder gets its own result (${tones.join(", ")})`,
+  );
   const fleetHead = await page.locator("[data-fleet-tone] h2").innerText();
   check(
     /2026_01_15_09_14_00_000_armlog/.test(fleetHead) && /2026_01_15_10_14_00_000_armlog/.test(fleetHead) && !/11_14/.test(fleetHead),
@@ -231,8 +245,40 @@ try {
   await page.locator('[data-log="2026_01_15_10_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
   check(await waitForResult("2026_01_15_10_14_00_000_armlog", "bad"), "a folder opens on its own summary");
   await page.getByRole("tab", { name: /^All logs/ }).click();
-  check((await page.locator("[data-log]").count()) === 3, "All logs goes back to the overview");
-  const fleetCopy = await copied(/^All logs/, 4);
+  check((await page.locator("[data-log]").count()) === 4, "All logs goes back to the overview");
+
+  // a modem assert: the .ass record read field by field, found in every file, and made the root cause
+  const crashCard = await page.locator('[data-log="2026_01_15_12_14_00_000_armlog"]').innerText();
+  check(/Modem assert in NR RRC \(nrrc_cell_select\.c line 1187\)/.test(crashCard), `the folder with an assert says so first ("${crashCard.split("\n").find((l) => /assert/i.test(l))}")`);
+  await page.locator('[data-log="2026_01_15_12_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
+  check(await waitForResult("2026_01_15_12_14_00_000_armlog", "bad"), "the log with an assert opens on its summary");
+  const crashHead = await page.locator("[data-verdict] h2").first().innerText().catch(() => "");
+  check(/Modem assert/.test(crashHead), `the assert is the root cause, ahead of the reject ("${crashHead}")`);
+  check((await page.locator("[data-crash-summary]").count()) === 1, "the summary shows the crash card under the headline");
+  await page.getByRole("tab", { name: /^Asserts/ }).click();
+  const ev = page.locator('[data-crash-event="assert"]');
+  const evText = await ev.first().innerText().catch(() => "");
+  check((await ev.count()) === 1, `the .ass record and the memory dump holding the same assert are one event (${await ev.count()})`);
+  check(
+    /ps\/nrrc\/src\/nrrc_cell_select\.c/.test(evText) && /line 1187/.test(evText) && /cell_idx < NRRC_MAX_CELL_NUM/.test(evText) && /NRRC/.test(evText) && /invalid cell index 17/.test(evText),
+    "the assert record gives where, the failed check, the task and the message",
+  );
+  check(/0x8043A1E2/.test(evText) && /nrrc_cell_select_handle_sib1/.test(evText) && /MOCORTM_TEST_W26\.03\.1/.test(evText), "registers, call stack and software version are read");
+  check(/Just before it in the log/.test(evText), "the messages logged just before the assert are listed");
+  const strong = await page.locator('[data-crash-line="strong"]').allInnerTexts();
+  check(
+    strong.length >= 2 && strong.some((t) => /traceview\.dat/.test(t) && /12:14:00\.\d{3}/.test(t)) && strong.some((t) => /\.logel/.test(t)),
+    `the assert is also found, timed, in the .logel and in Logel's decoded traces (${strong.length} lines)`,
+  );
+  await page.getByRole("tab", { name: /^Files/ }).click();
+  const assFile = await page.locator("li", { hasText: "_assert.ass" }).first().innerText();
+  const dumpFile = await page.locator("li", { hasText: "_modem_dump.mem" }).first().innerText();
+  check(/Modem assert record/.test(assFile) && /Analysed/i.test(await page.locator("h3", { hasText: "Analysed" }).first().innerText()), "the .ass file is listed as an analysed assert record");
+  check(/Crash evidence|Memory dump/.test(dumpFile), "the memory dump is listed as crash evidence");
+  const crashCopy = await copied(/^Asserts/, 4);
+  check(/nrrc_cell_select\.c/.test(crashCopy) && /Call stack/.test(crashCopy) && /Registers/.test(crashCopy), "Copy report copies the Asserts page");
+  await page.getByRole("tab", { name: /^All logs/ }).click();
+  const fleetCopy = await copied(/^All logs/, 5);
   check(/Issues found in/.test(fleetCopy) && /2026_01_15_11_14_00_000_armlog/.test(fleetCopy), "Copy report copies the All logs page");
   const [dlFleet] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: /HTML report/ }).first().click()]);
   const fleetFile = join(ROOT, "build", "fixtures", "report-fleet.html");
@@ -244,7 +290,13 @@ try {
   await fv.locator('[data-log="2026_01_15_09_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
   const fvHead = await fv.locator("[data-verdict] h2").first().innerText({ timeout: 10000 }).catch(() => "");
   const fvExports = await fv.getByRole("button", { name: /Copy report|HTML report|Copy the summary|JSON/ }).count();
-  check(fvLogs === 3 && /#62/.test(fvHead) && fvExports === 0, `the shared report holds every folder and opens each one (${fvLogs} logs, "${fvHead}")`);
+  check(fvLogs === 4 && /#62/.test(fvHead) && fvExports === 0, `the shared report holds every folder and opens each one (${fvLogs} logs, "${fvHead}")`);
+  await fv.getByRole("tab", { name: /^All logs/ }).click();
+  await fv.locator('[data-log="2026_01_15_12_14_00_000_armlog"]').getByRole("button", { name: /Open this log/ }).click();
+  await fv.getByRole("tab", { name: /^Asserts/ }).click();
+  const fvCrash = await fv.locator('[data-crash-event="assert"]').first().innerText({ timeout: 10000 }).catch(() => "");
+  const fvText = await fv.content();
+  check(/cell_idx < NRRC_MAX_CELL_NUM/.test(fvCrash) && !/msgview\.dat/.test(fvText), "the shared report keeps the Asserts page, without the file list");
   await fv.close();
 
   // an interface message: the S1AP / NGAP block is unpacked on first use

@@ -9,6 +9,8 @@ The browser extracts the capture (zip / folder / .logel) and sends:
   stats    the tool's lost-packet statistics
   device   modem / tool versions
   files    every file in the capture and what was done with it
+  crashes  modem asserts and crashes: assert records (.ass), dumps, and every assert /
+           crash / exception / reset line found in any file, grouped
 
 decode_capture() decodes the PDUs with the logged channel (it is known, so no
 guessing), runs the session analysis and folds the rest into it as findings,
@@ -393,12 +395,116 @@ def _stats_findings(stats):
              "refs": [], "category": "log", "source": "log"}]
 
 
-def extras_for(cap, n_messages):
-    """Findings, context and radio series to fold into the session analysis."""
+KIND_WORD = {"assert": "assert", "exception": "exception", "watchdog": "watchdog reset", "reset": "reset",
+             "memory": "memory failure", "panic": "panic", "fatal": "fatal error"}
+
+CRASH_CAUSES = {
+    "assert": ["A software check inside the modem failed: an unexpected message, state or value reached code that does not handle it",
+               "A modem firmware bug, often set off by a network configuration the firmware does not expect"],
+    "exception": ["The modem processor hit an illegal memory access or instruction (a firmware bug or memory corruption)"],
+    "watchdog": ["A modem task stopped responding (stuck in a loop, waiting on a lock or starved of CPU) and the watchdog reset it"],
+    "memory": ["The modem ran out of memory or a buffer overflowed: a leak or a burst of traffic the firmware did not size for"],
+    "panic": ["The modem's operating system stopped on an error it cannot recover from"],
+    "reset": ["The modem restarted on its own: it crashed or was reset by the host"],
+    "fatal": ["The modem reported an error it cannot recover from"],
+}
+
+CRASH_CHECKS = [
+    "Send the assert record (.ass), the .logel and the modem build to UNISOC: they map the file and line to the cause",
+    "Check whether the same assert repeats in other logs, and what the network sent just before it",
+    "Try a newer modem build if the assert is known and fixed there",
+]
+
+
+def _before(ts, stamps):
+    """Index of the last message logged at or before ts (same day, HH:MM:SS.mmm)."""
+    if not ts or not stamps:
+        return None
+    t = ts[-12:] if re.search(r"\d{2}:\d{2}:\d{2}\.\d{3}$", ts) else ts
+    best = None
+    for i, s in stamps:
+        if s and s <= t:
+            best = i
+    return best
+
+
+def _crash_findings(crashes, stamps):
+    """Every assert and crash, each its own critical finding, so none can be missed."""
+    if not crashes:
+        return []
+    out = []
+    events = crashes.get("events") or []
+    groups = crashes.get("groups") or []
+    covered = set()
+    for e in events:
+        if e.get("fromDump") and not e.get("where") and not e.get("expression") and e.get("kind") == "reset":
+            out.append({"severity": "critical", "title": "The modem crashed: a memory dump was saved",
+                        "detail": f"{e['file']} is written when the modem crashes (or when a dump is taken by hand). It holds "
+                                  "no readable assert text; UNISOC's tools read the cause from it.",
+                        "causes": CRASH_CAUSES["reset"], "checks": CRASH_CHECKS,
+                        "refs": [], "category": "crash", "source": "assert"})
+            continue
+        bits = []
+        if e.get("where"):
+            bits.append(f"The modem stopped at {e['where']}" + (f" in {e['module']}" if e.get("module") else ""))
+        elif e.get("module"):
+            bits.append(f"The modem stopped in {e['module']}")
+        if e.get("task"):
+            bits.append(f"task {e['task']}")
+        why = e.get("expression") or e.get("message")
+        detail = ", ".join(bits) + (f": {why}" if why else "") + "." if bits or why else ""
+        if e.get("exception") and e.get("kind") != "assert":
+            detail += f" Exception: {e['exception']}."
+        detail += f" Recorded in {e['file']}" + (f" at {e['ts']}" if e.get("ts") else "") + "."
+        ref = _before(e.get("ts"), stamps)
+        out.append({"severity": "critical", "title": e.get("title") or "Modem assert", "detail": detail.strip(),
+                    "causes": CRASH_CAUSES.get(e.get("kind"), CRASH_CAUSES["assert"]), "checks": CRASH_CHECKS,
+                    "refs": [ref] if ref is not None else [], "category": "crash", "source": "assert", "at": e.get("ts")})
+        src = (e.get("source") or "").split("/")[-1].lower()
+        for k, g in enumerate(groups):
+            if (src and src in g["text"].lower()) or e["file"] in (g.get("files") or {}):
+                covered.add(k)
+    # strong lines no record explains: one finding per kind
+    by_kind = {}
+    for k, g in enumerate(groups):
+        if g.get("strong") and k not in covered:
+            by_kind.setdefault(g["kind"], []).append(g)
+    for kind, gs in by_kind.items():
+        n = sum(g["count"] for g in gs)
+        first = min((g["first"] for g in gs if g.get("first")), default=None)
+        files = sorted({f for g in gs for f in (g.get("files") or {})})
+        sev = "critical" if kind in ("assert", "exception", "watchdog", "panic") else "warning"
+        word = KIND_WORD.get(kind, kind)
+        title = {"assert": "The modem asserted", "exception": "The modem crashed with an exception",
+                 "watchdog": "The modem watchdog fired", "panic": "The modem panicked",
+                 "reset": "The modem logged a reset", "memory": "The modem logged a memory failure",
+                 "fatal": "The modem logged a fatal error"}.get(kind, f"Modem {word}")
+        sample = gs[0]["text"]
+        detail = (f"{n} {word} {'line' if n == 1 else 'lines'} in {', '.join(files[:3])}" + (f" and {len(files) - 3} more" if len(files) > 3 else "")
+                  + (f", first at {first}" if first else "") + f". First one: “{sample[:220]}”")
+        ref = _before(first, stamps)
+        out.append({"severity": sev, "title": title, "detail": detail, "causes": CRASH_CAUSES.get(kind, []), "checks": CRASH_CHECKS,
+                    "refs": [ref] if ref is not None else [], "category": "crash", "source": "assert", "count": n, "at": first})
+    searched = crashes.get("searched") or []
+    if searched and not out:
+        weak = sum(g["count"] for g in groups)
+        out.append({"severity": "ok", "title": "No assert or crash in any file",
+                    "detail": f"{len(searched)} {'file was' if len(searched) == 1 else 'files were'} searched line by line for asserts, "
+                              "crashes, exceptions, watchdog resets and memory failures; none was found."
+                              + (f" {weak} trace {'line mentions' if weak == 1 else 'lines mention'} one in passing (see Asserts)." if weak else ""),
+                    "refs": [], "category": "crash", "source": "assert"})
+    return out
+
+
+def extras_for(cap, n_messages, stamps=None):
+    """Findings, context and radio series to fold into the session analysis.
+
+    stamps: (message index, time) of each decoded message, to point a crash at what came just before it."""
     at = _parse_at(cap.get("at"))
     f_at, ctx = _at_findings_context(at, n_messages)
     r = _radio(cap.get("radio"), at["cesq"])
-    findings = f_at + _radio_findings(r) + _ip_findings(cap.get("ip")) + _stats_findings(cap.get("stats"))
+    findings = (_crash_findings(cap.get("crashes"), stamps) + f_at + _radio_findings(r) + _ip_findings(cap.get("ip"))
+                + _stats_findings(cap.get("stats")))
     dev = cap.get("device") or {}
     ctx["device"] = [{"label": k, "value": v} for k, v in (
         ("Modem", dev.get("modem")), ("Platform", dev.get("platform")), ("Project", dev.get("project")),

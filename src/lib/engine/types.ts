@@ -225,6 +225,60 @@ export interface CaptureInfo {
   };
   span?: { date: string | null; start: string | null; end: string | null };
   notes?: string[];
+  /** asserts and crashes: records, dumps and every matching line in any file */
+  crashes?: CrashInfo;
+}
+
+export type CrashKind = "assert" | "exception" | "watchdog" | "reset" | "memory" | "panic" | "fatal";
+
+/** One assert record or crash file, read field by field. */
+export interface AssertRecord {
+  file: string;
+  kind: CrashKind;
+  title: string;
+  where?: string;
+  source?: string;
+  line?: number;
+  module?: string;
+  expression?: string;
+  message?: string;
+  task?: string;
+  exception?: string;
+  ts?: string | null;
+  version?: string;
+  registers: { name: string; value: string }[];
+  stack: string[];
+  raw: string;
+  fromDump?: boolean;
+}
+
+/** The same assert or crash line wherever it was found, with how often and when. */
+export interface CrashGroup {
+  kind: CrashKind;
+  /** a firm sign of a crash rather than a word in a trace */
+  strong: boolean;
+  text: string;
+  files: Record<string, number>;
+  count: number;
+  first: string | null;
+  last: string | null;
+}
+
+export interface CrashInfo {
+  events: AssertRecord[];
+  groups: CrashGroup[];
+  /** files whose contents were searched (left out of a shared report, which keeps only the count) */
+  searched: string[];
+  searchedCount?: number;
+  lines: number;
+}
+
+/** How many files were searched for asserts. */
+export const searchedCount = (c?: CrashInfo | null) => c?.searchedCount ?? c?.searched.length ?? 0;
+
+/** Whether a capture shows a crash: an assert record, a dump or a firm crash line. */
+export function crashFound(c?: CrashInfo | null) {
+  return Boolean(c && (c.events.length || c.groups.some((g) => g.strong)));
 }
 
 export interface Session {

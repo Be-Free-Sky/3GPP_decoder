@@ -5,8 +5,12 @@ src/lib/capture/logel.ts), next to the other files Logel saves: an IP capture wi
 version files, empty files and a Logel view cache. No real device data is involved.
 
     python decoder/tools/build_logel_fixture.py OUT.zip            one armlog (registration reject)
-    python decoder/tools/build_logel_fixture.py OUT.zip --multi    three armlog folders in one zip:
-        registration reject, PDU session reject, and a folder without a .logel
+    python decoder/tools/build_logel_fixture.py OUT.zip --multi    four armlog folders in one zip:
+        registration reject, PDU session reject, a folder without a .logel, and a modem
+        assert (an .ass record, the assert in the .logel and in Logel's decoded traces, and
+        a memory dump)
+
+Every folder also has Logel's decoded trace view (traceview.dat with its traceview.pbs index).
 """
 
 import json
@@ -55,7 +59,7 @@ def trace(fmt, args=()):
     return struct.pack("<II", 0x3F, len(payload) // 4) + payload
 
 
-def build_logel(session, pc_start_ms=PC_START_MS):
+def build_logel(session, pc_start_ms=PC_START_MS, crash_tick=None):
     items = []  # (tick, bytes)
     lines = session["text"].splitlines()
     t0 = None
@@ -84,6 +88,8 @@ def build_logel(session, pc_start_ms=PC_START_MS):
     for tick, line in ((START_TICK + 50, '+C5GREG: 2,2'), (START_TICK + 400, '+CESQ: 99,99,255,255,255,255,72,68,70'),
                        (last + 30, '+C5GREG: 2,3'), (last + 40, '+COPS: 0,0,"Test Network",11')):
         items.append((tick, trace(line + "\r\n")))
+    if crash_tick is not None:
+        items.append((crash_tick, trace("SCI_ASSERT: nrrc_cell_select.c line %d, cell_idx < NRRC_MAX_CELL_NUM", (1187,))))
     items.sort(key=lambda x: x[0])
 
     out = bytearray()
@@ -149,7 +155,60 @@ def build_pcap(pc_start_ms=PC_START_MS):
     return bytes(out)
 
 
-def armlog_files(name, session=None, pc_start_ms=PC_START_MS):
+def last_tick(session):
+    """Tick of the last message of a session, as build_logel lays it out."""
+    stamps = []
+    for line in session["text"].splitlines():
+        head = line.split()
+        if len(head) >= 4 and ":" in head[0]:
+            h, m, sec = head[0].split(":")
+            stamps.append((int(h) * 3600 + int(m) * 60 + float(sec)) * 1000)
+    return START_TICK + int(max(stamps) - min(stamps))
+
+
+def clock(ms):
+    t = ms % 86_400_000
+    return f"{t // 3_600_000:02d}:{t // 60_000 % 60:02d}:{t // 1000 % 60:02d}.{t % 1000:03d}"
+
+
+def traceview(lines):
+    """Logel's decoded trace view: NUL-ended lines (.dat) and the TIND index (.pbs):
+    a 0x200 header, then 44 bytes per line with the tick at +12, length at +26, offset at +28."""
+    dat = bytearray()
+    pbs = bytearray(b"TIND" + bytes(0x200 - 4))
+    for k, (tick, text) in enumerate(lines):
+        raw = text.encode() + b"\x00"
+        row = bytearray(44)
+        struct.pack_into("<III", row, 0, k, 0x100 + k, k)
+        struct.pack_into("<I", row, 12, tick)
+        struct.pack_into("<H", row, 26, len(raw))
+        struct.pack_into("<Q", row, 28, len(dat))
+        pbs += row
+        dat += raw
+    return bytes(dat), bytes(pbs)
+
+
+ASS_RECORD = """====================== Modem Assert Information ======================
+Assert Time      : 2026-01-15 {clock}
+SW Version       : MOCORTM_TEST_W26.03.1
+Current Task     : NRRC
+Assert File      : ps/nrrc/src/nrrc_cell_select.c
+Assert Line      : 1187
+Expression       : cell_idx < NRRC_MAX_CELL_NUM
+Assert Info      : invalid cell index 17 while reading SIB1
+---------------------- Registers ----------------------
+R0  = 0x00000011  R1  = 0x0000000F  R2  = 0x20A3F1C0  R3  = 0x00000000
+R4  = 0x20A3F000  R5  = 0x00000065  R6  = 0x00000001  R7  = 0x20F01EA0
+SP  = 0x20F01E88  LR  = 0x8043A1D5  PC  = 0x8043A1E2  CPSR = 0x600001D3
+---------------------- Call Stack ----------------------
+#0  0x8043A1E2  nrrc_cell_select_handle_sib1 + 0x8E
+#1  0x80439F10  nrrc_cell_select_proc + 0x1C4
+#2  0x80412A04  nrrc_main_task_entry + 0x220
+#3  0x80001B3C  os_thread_entry + 0x30
+"""
+
+
+def armlog_files(name, session=None, pc_start_ms=PC_START_MS, crash=False):
     """The files Logel saves for one capture; without a session there is no .logel."""
     empty_pcap = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
     files = {
@@ -166,7 +225,24 @@ def armlog_files(name, session=None, pc_start_ms=PC_START_MS):
         f"{name}/msgview.pbs": b"MSG " + bytes(1020),
     }
     if session:
-        files[f"{name}.logel"] = build_logel(session, pc_start_ms)
+        last = last_tick(session)
+        crash_tick = last + 450 if crash else None
+        files[f"{name}.logel"] = build_logel(session, pc_start_ms, crash_tick)
+        # Logel's decoded traces: ordinary lines, one that only mentions an assert, and the assert itself
+        lines = [(START_TICK + k * 200, f"NRRC: serving cell pci {101 + k % 2} rsrp -88 dBm") for k in range((last - START_TICK) // 200 + 1)]
+        lines.insert(2, (START_TICK + 300, "NRRC: assert check passed for SIB1 of cell 101"))
+        if crash:
+            lines.append((crash_tick, "NRRC: SCI_ASSERT: file nrrc_cell_select.c, line 1187: cell_idx < NRRC_MAX_CELL_NUM"))
+            lines.append((crash_tick + 2, "OS: modem crash, saving the memory dump"))
+            when = clock(pc_start_ms + crash_tick - START_TICK)
+            files[f"{name}_assert.ass"] = ASS_RECORD.format(clock=when).replace("\n", "\r\n").encode()
+            # a memory dump: binary, with the firmware's own copy of the assert inside
+            junk = bytes((k * 37 + 11) % 251 for k in range(32768))
+            files[f"{name}_modem_dump.mem"] = (b"MDMP\x01\x00" + junk[:9000] + b"\x00Assert File: ps/nrrc/src/nrrc_cell_select.c, Line: 1187\x00"
+                                               + junk[9000:] + b"\x00MOCORTM_TEST_W26.03.1\x00")
+        dat, pbs = traceview(lines)
+        files[f"{name}/traceview.dat"] = dat
+        files[f"{name}/traceview.pbs"] = pbs
     return files
 
 
@@ -178,6 +254,7 @@ def main(out_path, multi=False):
         hour = 3_600_000
         folders["2026_01_15_10_14_00_000_armlog"] = armlog_files("2026_01_15_10_14_00_000", sessions["nr-sa-pdu-fail"], PC_START_MS + hour)
         folders["2026_01_15_11_14_00_000_armlog"] = armlog_files("2026_01_15_11_14_00_000", None, PC_START_MS + 2 * hour)
+        folders["2026_01_15_12_14_00_000_armlog"] = armlog_files("2026_01_15_12_14_00_000", sessions["nr-sa-slice-reject"], PC_START_MS + 3 * hour, crash=True)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         for folder, files in folders.items():

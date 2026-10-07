@@ -133,6 +133,18 @@ async function collect(stream: ReadableStream<Uint8Array>, size: number) {
   return at === out.length ? out : out.subarray(0, at);
 }
 
+/** An entry as a stream of chunks, so a large file can be searched without holding it whole. */
+export async function zipEntryStream(blob: Blob, e: ZipEntry): Promise<ReadableStream<Uint8Array>> {
+  if (e.encrypted) throw new Error(`${e.name} is password protected.`);
+  const loc = await bytes(blob, e.offset, e.offset + 30);
+  if (u32(loc, 0) !== SIG_LOC) throw new Error(`${e.name}: the zip entry header is damaged.`);
+  const start = e.offset + 30 + u16(loc, 26) + u16(loc, 28);
+  const data = blob.slice(start, start + e.compressedSize);
+  if (e.method === 0) return data.stream();
+  if (e.method === 8 && typeof DecompressionStream !== "undefined") return data.stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  throw new Error(`${e.name} uses a compression method (${e.method}) this page cannot unpack.`);
+}
+
 export async function readZipEntry(blob: Blob, e: ZipEntry): Promise<Uint8Array> {
   if (e.encrypted) throw new Error(`${e.name} is password protected.`);
   const loc = await bytes(blob, e.offset, e.offset + 30);
